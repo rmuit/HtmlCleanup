@@ -24,51 +24,75 @@ if len(args) != 1:
 
 ### Function definitions
 
-# Find the current element's index in the parent's "content"(list)
-# This is sorely lacking functionality in BeautifulSoup(?)
-# and it's really needed because findPreviousSiblings() just does not cut it.
-# (That, like findAll, can only return/count Tags OR NavigableStrings)
-#
-# This function is NOT AT ALL perfect. You can only call it for an element that is
-# unique among its siblings -- if there's an equal element somewhere, you may
-# get the wrong index.
-def indexinparentcontents(e):
-  r = e.parent.contents
-  i = 0
-  while i < len(r):
-    if r[i] == e:
-      return i
-    i = i + 1
-  exit('Internal error in indexinparentcontents(): cannot find myself! Dying...')
-
 # move all contents out of one tag, to just before the other tag
 def movecontentsbefore(fromwithin, tobefore):
-  movecontentsinside(fromwithin, tobefore.parent, indexinparentcontents(tobefore))
+  movecontentsinside(fromwithin, tobefore.parent, tobefore.indexInParent())
 
 def movecontentsinside(fromwithin, toinside, startindex=0):
-  #ee = fromwithin.find()
-  #i = 0
-  #while ee:
-  #  toinside.insert(i, ee)
-  #  i = i + 1
-  #  ee = fromwithin.find()
   r = fromwithin.contents
   i = startindex
-  # Rules:
-  # - the last element in the contents array gets 'stuck' in its source sometimes -
-  # which means that an insert is a no-op (since an element can't be in two places
-  # at once). This is not really bad as it always seems to be a newline or breakpoint,
-  # but it's irritating in that we need to accomodate the code for this...
-  # - when we do an 'insert' of an element (to somewhere else) of an element of r,
-  # it automatically disappears from r. So we can keep inserting from the first position.
   while len(r):
-    l1 = len(r)
     toinside.insert(i, r[0])
     i = i + 1
-    l2 = len(r)
-    if l1 == 1 and l2 == 1:
-      # maybe we should still insert the thing? I don't know. For now, ignore.
-      return
+
+### THIS REGEX IS REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
+#
+rx = re.compile('^(?:\s|\&nbsp\;|\<br \/\>)+$')
+rxe = re.compile('(?:\s|\&nbsp\;|\<br \/\>)+$')
+#NB: the \n and ' ' are probably not necessary here because they do not affect the 
+# rendering of the document (and taking the '\n' away as we are doing now may
+# be worse for readability of the source?) ...
+# ...but I'll leave it in anyway, until I'm sure. Things work now, anyway.
+#NB2: above is not really correct. They should be in the regexp
+# because strings can be compound, like '\r\n        &nbsp;&nbsp;'
+#NB3: this regex can be used on all elements - but it will match _either_ a 'br'
+# _or_ a combination of anything else - because 'br's are Tags, not in a NavigableString
+
+def matchstring(e, rx):
+  # Difficulty here: str(ee) may give UnicodeEncodeError with some characters
+  # and so may ee.__str__() and repr(ee) (the latter with some \x?? chars).
+  # The only thing sure to not give errors is ee.__repr__()
+  # However you don't want to use THAT for matching! So use it as a safety net
+  # to make sure str() is not called when unicode chars are in there
+  s = e.__repr__()
+  if s.find('\\u') != -1 or s.find('\\x') != -1:
+    return False
+  return rx.search(str(e))
+
+# Remove all tags that only contain whitespace
+# (do not remove the contents. Move the contents outside; remove the tags.)
+def removetagcontainingwhitespace(tagname):
+  r = soup.findAll(tagname)
+  for e in r:
+    ok = 1
+    for ee in e.contents:
+      if not(matchstring(ee, rx)):
+        ok = 0
+        break
+    if ok:
+      movecontentsbefore(e, e)
+      e.extract()
+      
+rxnl = re.compile('\S\n$')
+def extractwhitespacefromend(t):
+  r = t.contents
+  while len(r):
+    e = r[-1]
+    if e.__class__.__name__ == 'Tag':
+      if e.__unicode__() == '<br />':
+        e.extract()
+      else:
+        extractwhitespacefromend(e)
+        break
+    elif matchstring(e, rx):
+      # delete whole NavigableString consisting of whitespace
+      e.extract()
+    elif matchstring(e, rxe) and not rxnl.search(str(e)):
+      # extract whitespace from end of NavigableString (except if it's just a newline for markup; we don't want to get everything on one line...)
+      s = rxe.sub('', str(e))
+      e.replaceWith(s)
+    else:
+      break
 
 # Check alignments of all elements inside a certain parent element.
 # If alignment of an element is explicitly specified AND equal to the specified parent
@@ -94,7 +118,8 @@ def checkalign(pe, parentalign, pallowchange = ''):
 
   al = {}
   # non-whitespace NavigableStrings always have alignment equal to the parent element
-  r =  nonwhitenavstrings(pe)
+  # (whitespace strings don't matter; alignment can be changed without visible difference)
+  r = pe.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)
   if len(r):
     al['inherit'] = True
     # setting 'inherit' effectively means: prevent parent's alignment from being changed
@@ -104,12 +129,12 @@ def checkalign(pe, parentalign, pallowchange = ''):
   for t in r:
 
     s = t.__repr__() 
-    talign = getattr(t, 'align')
+    talign = t.get('align')
     if talign:
 #NOTE: 'align' can also be "middle"... ignore that for now until I see it being used on non-nivigation-images
       thisalign = talign
       allowchange = 'any'
-    elif s == '<center>':
+    elif s.startswith('<center>'):
       thisalign = 'center'
       allowchange = parentalign
     else:
@@ -122,7 +147,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
     # recurse through subelements first
     tal = checkalign(t, thisalign, allowchange)
     # handling of 'implicitly aligning tags', i.e. <center>:
-    if s == '<center>':
+    if s.startswith('<center>'):
       if 'CHANGE' in tal:
         # align needs change -- which can (only) be done by deleting the tag.
         movecontentsbefore(t, t)
@@ -133,14 +158,16 @@ def checkalign(pe, parentalign, pallowchange = ''):
       if 'CHANGE' in tal:
         # align needs change
         # (we may end up deleting it just afterwards, but this way keeps code clean)
-        setattr(t, 'align', tal['CHANGE'])
+        #setattr(t, 'align', tal['CHANGE'])
+        t['align'] = tal['CHANGE'] ## Does this now always work? Otherwise use __setitem__()?
         talign = tal['CHANGE']
 
       if talign:
         ## explicit/changed alignment
         if talign == parentalign:
           # delete (now-)superfluous explicit 'align' attribute in tag
-          delattr(t, 'align')
+          #delattr(t, 'align')
+          del t['align']
           al['inherit'] = True
         else:
           # We're just collecting alignments 'not equal to inherited' here;
@@ -162,7 +189,8 @@ def checkalign(pe, parentalign, pallowchange = ''):
     al['CHANGE'] = lastalign
     # Delete any explicit attribute because we will change the parent's.
     for t in pe.findAll(align=lastalign, recursive=False):
-      delattr(t, 'align')
+      #delattr(t, 'align')
+      del t['align']
 
   return al
 # Ideas for this routine:
@@ -170,77 +198,6 @@ def checkalign(pe, parentalign, pallowchange = ''):
 # - replace 'middle' by 'center'? (align=middle is used for pictures, I've seen sometimes.)
 # - write: 'style="text-align:' instead of 'align=' (See comment at function start)
 #   OR even better: 'class=align-***'
-
-#Helper functions...
-# apparently referencing t['align'] does not always work. (Bug in BeautifulSoup?)
-# Some attributes (I've seen ones without siblings) give AttributeError deep in BeautifulSoup.py:
-# AttributeError("'NoneType' object has no attribute 'next'",)
-def getattr(t, an):
-  try:
-    av = t[an]
-  except KeyError:
-    av = ''
-  except AttributeError:
-    av = ''
-    for a in t.attrs:
-      if a[0] == an:
-        av = a[1]
-        break
-  return av
-def delattr(t, an):
-  try:
-    del t[an]
-  except KeyError:
-    pass
-  except AttributeError:
-    for a in t.attrs:
-      if a[0] == an:
-        t.attrs.remove(a)
-        break
-def setattr(t, an, av):
-  try:
-    t[an] = av
-  except AttributeError:
-    for a in t.attrs:
-      if a[0] == an:
-        t.attrs.remove(a)
-        break
-    t.attrs.append((an, av))
-
-def nonwhitenavstrings(e):
-  # (Apparently we can use variables from outside the context in below lambda function,
-  # i.e. the defined compiled regex for whitespace)
-  #pe.findAll(text=lambda x, r=rx: not r.match(x))
-  #r = filter((lambda x, rr=rx: rr.match(x)), pe.findall(text=True, recursive=False))
-  # Lambda functions don't seem to work - which may be because of the same internal error
-  # that forces us to create above setattr() et al functions.
-  # And the regexp cannot be negated. So:
-  alltext = e.findAll(text=re.compile('^(?:\&nbsp\;|\<br\s*\/\>|\s)+$'), recursive=False)
-  whitespace = e.findAll(text=True, recursive=False)
-  # difference of lists
-  r = [ee for ee in alltext if not ee in whitespace]
-  #r = filter((lambda x, r=nr: x not in r), pe.findAll(text=True))
-  return r
-
-rx = re.compile('^(?:\&nbsp\;|\<br\s*\/\>|\s)+$')
-#NB: the \n and ' ' are probably not necessary here because they do not affect the 
-# rendering of the document (and taking the '\n' away as we are doing now may
-# be worse for readability of the source?) ... and if we took the '\n' out of here,
-# we would not have the problems with 'sticky newlines at end of contents' either...
-# ...but I'll leave it in anyway, until I'm sure. Things work now, anyway.
-#NB2: above is not really correct. They should be in the regexp
-# because strings can be compound, like '\r\n        &nbsp;&nbsp;'
-
-def matchstring(e, rx):
-  # Difficulty here: str(ee) may give UnicodeEncodeError with some characters
-  # and so may ee.__str__() and repr(ee).
-  # The only thing sure to not give errors is ee.__repr__()
-  # However you don't want to use THAT for matching! So use it as a safety net
-  # to make sure str() is not called when unicode chars are in there
-  s = e.__repr__()
-  if s.find('\\u') != -1 or s.find('\\x') != -1:
-    return False
-  return rx.search(str(e))
 
 
 ##### Start the action
@@ -313,29 +270,15 @@ r = soup.findAll(text=lambda text:isinstance(text, Comment))
 r = soup.findAll('b')
 for t in r:
   e = Tag(soup, 'strong')
-  t.parent.insert(indexinparentcontents(t), e)
+  t.parent.insert(t.indexInParent(), e)
   movecontentsinside(t, e)
   t.extract()
 r = soup.findAll('i')
 for t in r:
   e = Tag(soup, 'em')
-  t.parent.insert(indexinparentcontents(t), e)
+  t.parent.insert(t.indexInParent(), e)
   movecontentsinside(t, e)
   t.extract()
-
-# Remove all 'b' that only contain whitespace
-# (do not remove the contents. Move the contents outside; remove the tags.)
-r = soup.findAll('strong')
-for e in r:
-  ok = 1
-  for ee in e.contents:
-    if not(matchstring(ee, rx)):
-      ok = 0
-      break
-  if ok:
-    movecontentsbefore(e, e)
-    e.extract()
-
 
 # Remove stupid MSFT 'o:p' tags. Apparently it is best for the document flow,
 # if we get rid of some markup whitespace (not &nbsp) inside these tags too...
@@ -363,14 +306,22 @@ for t in r:
     movecontentsbefore(t, t)
   t.extract()
 
+# Remove all 'b' that only contain whitespace
+# (do not remove the contents. Move the contents outside; remove the tags.)
+removetagcontainingwhitespace('strong')
+removetagcontainingwhitespace('em')
+
+
 # Look through 'span' tags.
 # Delete 'lang' and 'style' attributes from it; if it's then empty, delete all of it
 # (I know this is DANGEROUS, as some style attributes might actually be useful
 #  but I haven't seen any yet. So advantages outweigh dangers, so far.)
 r = soup.findAll('span')
 for t in r:
-  delattr(t, 'lang')
-  delattr(t, 'style') ###### DANGER?
+  #delattr(t, 'lang')
+  #delattr(t, 'style') ###### DANGER?
+  del t['lang']
+  del t['style'] ###### DANGER?
   if len(t.attrs) == 0:
     movecontentsbefore(t, t)
     t.extract()
@@ -379,7 +330,7 @@ for t in r:
 r = soup.findAll('font')
 for t in r:
   if len(t.attrs) == 1:
-    v = getattr(t, 'color')
+    v = t.get('color')
     if v:
       if v == 'black' or v == '0' or v == '#000' or v == '#000000':
         # delete black color definition, because the general color is already black.
@@ -388,8 +339,9 @@ for t in r:
         movecontentsbefore(t, t)
       else:
         e = Tag(soup, 'span')
-        setattr(e, 'color', v)
-        t.parent.insert(indexinparentcontents(t), e)
+        #setattr(e, 'color', v)
+        e['color'] = v ## Does this now always work? Otherwise use __setitem__()?
+        t.parent.insert(t.indexInParent(), e)
         movecontentsinside(t, e)
       t.extract()
 
@@ -417,35 +369,20 @@ for t in r:
 # Some 'a' tags have 'b' tags surrounding them, and some have 'b' tags inside them.
 # Normalize this; 
 r = soup.findAll('a')
-for e in r:
-  r1 = e.findAll('strong', recursive=False)
+for t in r:
+  r1 = t.findAll('strong', recursive=False)
   if r1:
-    r2 = e.findAll(recursive=False)
-    if len(r1) == len(r2) and len(nonwhitenavstrings(e)) == 0:
+    r2 = t.findAll(recursive=False)
+    if len(r1) == len(r2) and len(t.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)) == 0:
       # all tags are 'b' and all navigablestrings are whitespace.
       # Delete the 'b' (can be a chain of multiple, in extreme weird cases)
-      for t in r1:
-        movecontentsbefore(t, t)
-        t.extract()
+      for e in r1:
+        movecontentsbefore(e, e)
+        e.extract()
       # make 'strong' tag and move e inside it
-      t = Tag(soup, 'strong')
-      e.parent.insert(indexinparentcontents(e), t)
-      t.insert(0, e)
-      
-def extractwhitespacefromend(t):
-  # accomodate for stupid newline at last of contents not wanting to be extracted
-  i = -1
-  r = t.contents
-  while len(r)+i>=0 and matchstring(r[i], rx):
-    l = len(r)
-    r[i].extract()
-    if len(r) == l:
-      # this should hot happen so apparently the newline at the end would not be extracted.
-      # ignore it and go further back inside the string.
-      i = i - 1
-    #else:
-    #  # reset. Try again, against hope...
-    #  i = -1
+      e = Tag(soup, 'strong')
+      t.parent.insert(t.indexInParent(), e)
+      e.insert(0, t)
 
 # remove whitespace at end of paragraphs
 r= soup.findAll('p')
@@ -487,7 +424,7 @@ for t in r:
       # out of there just like that.
       e = Tag(soup, 'div')
       e['align'] = 'left'
-      t.parent.insert(indexinparentcontents(t), e)
+      t.parent.insert(t.indexInParent(), e)
       movecontentsinside(r_td[0], e)
       t.extract()
 
@@ -526,7 +463,7 @@ for t in r:
     # this actually misplaces stuff and the ul may be inserted _before_ a string
     # when it should be inserted after. I don't know a solution for this atm.)
     e = Tag(soup, 'ul')
-    l = indexinparentcontents(t)
+    l = t.indexInParent()
     t.parent.insert(l, e)
     # insert li's and move all the contents from the second td's into there
     # (Is it always legal to just 'dump everything' inside a li? Let's hope so.)
@@ -581,22 +518,37 @@ for t in soup.findAll('div'):
 r = soup.body.contents
 rx1 = re.compile('^\<p(?:\s|\>)')
 rx2 = re.compile('^\<a href=\"(?:[^\"]*\/)?index.htm\"')
-v = 2
+rx3 = re.compile('^\<img src=\"_derived\/[^\>]+\/\>$')
+if str(r[0]) == '\n':
+  # we want the first newline to remain there,
+  # so the body tag will be on a line by itself
+  i = 1
+else:
+  i = 0
+v = 3
 while v:
   # find whitespace _before_ the real content
   # this will likely be 'markup whitespace' (newlines) that are unnecessary now
   # Removing 'HTML whitespace' (like breaks/nbsp) has its effect on the actual page -but delete it anyway. I think we want to unify 'space at the start' anyway.
-  if matchstring(r[0], rx):
-    r[0].extract()  ### This actually changes r
-  elif matchstring(r[0], rx1):
-    if len(r[0].contents) == 0:
+  if matchstring(r[i], rx):
+    r[i].extract()  ### This actually changes r
+  elif matchstring(r[i], rx1):
+    if len(r[i].contents) == 0:
       # extract empty paragraph at start -- that's just as "whitespace" as the above
-      r[0].extract()
-    elif v == 2:
+      r[i].extract()
+    elif v == 3:
       # look for the buttons
-      e = r[0].findNext()
+      e = r[i].findNext()
       if matchstring(e, rx2):
-        r[0].extract()
+        r[i].extract()
+        v = 2
+      else:
+        v = 0 # other nonempty paragraph
+    elif v == 2:
+      # look for a header title image (which is superfluous because the title's also in the page)
+      rr = r[i].findAll()
+      if len(rr) == 1 and matchstring(rr[0], rx3):
+        r[i].extract()
         v = 1
       else:
         v = 0 # other nonempty paragraph
@@ -606,32 +558,28 @@ while v:
     v = 0 # other tag/NavigableString
 
 # Last
-# NB: this is partly effectively extractwhitespacefromend() - but intermixed with tags too
+# NB: this is partly effectively extractwhitespacefromend() - but intermixed with empty <p> tags too
 v = 2
-i = len(r)-1
+if str(r[-1]) == '\n':
+  # we want the last newline to remain there,
+  # so the body tag will be on a line by itself
+  i = -2
+else:
+  i = -1
 while v:
   if matchstring(r[i], rx):
-    # bug#1: first time, a random (the first) newline is deleted from r, instead of the one we want,
-    # 2nd time, nothing is deleted at all
-    # but the way we are handling it now (with i=i-1) should accomodate for things...
-    if r[i] != '\n':
-      # on second thought... because of the bug, newlines are deleted all over the place
-      # and that's worse than not deleting them at all (from the end)?
-      r[i].extract()
-    i = i - 1
+    r[i].extract()
+    #i = i - 1
   elif matchstring(r[i], rx1):
     if len(r[i].contents) == 0:
-      # last paragraph is empty. This happens sometimes.
-      # extract and try next one. (r is changed)
-      ##r[i].extract()
-      ##Working around bug #2: deleting the _last tag_ from a _contents_ array may also go wrong.
-      #(actually test show that it still goes wrong; empty paragraphs are extracted from the wrong position. But at least no other random tags are deleted...)
-      soup.body.findAll(recursive=False)[-1].extract()
+      r[i].extract()
+      #i = i - 1
     elif v == 2:
       e = r[i].findNext()
       if matchstring(e, rx2):
-        ##r[i].extract()
-        soup.body.findAll(recursive=False)[-1].extract()
+        r[i].extract()
+        #soup.body.findAll(recursive=False)[-1].extract()
+        #i = i - 1
         v = 1
       else:
         v = 0 # other nonempty paragraph; quit
@@ -645,7 +593,4 @@ while v:
 ###TODO: remove unnecessary html entities like &ldquo, or stuff?
 # no, FG might object to "different" quotes?
 
-###TODO: delete EM with only whitespace in them (like b)
-###TODO: delete whitespace _at end of_ a navigablestring, in that function
-###TODO: delete whitespace _nested_ inside last tags, in that routine (see what effects it has on library.htm)
 print soup
