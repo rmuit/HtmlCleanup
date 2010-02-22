@@ -189,16 +189,102 @@ def checkalign(pe, parentalign, pallowchange = ''):
     al['CHANGE'] = lastalign
     # Delete any explicit attribute because we will change the parent's.
     for t in pe.findAll(align=lastalign, recursive=False):
-      #delattr(t, 'align')
       del t['align']
 
   return al
 # Ideas for this routine:
 # - if all your stuff is 'center', and more than one (and not inherit), then insert a 'center', place everything inside, and then delete all the explicit align=center from these tags
 # - replace 'middle' by 'center'? (align=middle is used for pictures, I've seen sometimes.)
-# - write: 'style="text-align:' instead of 'align=' (See comment at function start)
-#   OR even better: 'class=align-***'
 
+# Filter out attributes from a tag; change some others
+#
+def mangleattributes(t):
+  #t.attrs is list of tuples
+  # so if you loop through it, you get tuples back
+  # still you can USE it as a dict type. So you can assign and delete stuff by key
+  # however you may not delete stuff by key while iterating of the list of attrs! That makes the iterator break off...
+
+  # create list of keys first
+  attrs = []
+  for attr in t.attrs:
+    attrs.append(attr[0])
+
+  for can in attrs:
+    cav = t.get(can)
+    an = can.lower()
+    av = cav.lower()
+
+    if an == 'align':
+      # Replace this outdated attribute by a 'class="align-..."' attribute
+      #  Assumes you have those classes defined in CSS somewhere!
+      # (We can also go for a 'style: align=...' attribute, but I'd like to have less explicit style attributes in the HTML source if I can, so make a 'layer')
+      sv = t.get('class')
+      if sv:
+        # assume this class is not yet present
+        t['class'] = sv + ' align-' + av
+
+      else:
+        t['class'] = 'align-' + av
+      av = ''
+
+    elif an == 'class':
+      classes = cav.split()
+      for av in classes:
+        if av.lower() == 'msonormal':
+          classes.remove(av)
+      av = ' '.join(classes)
+
+    elif an == 'lang':
+      # always remove 'lang' attributes
+      av = ''
+
+    elif an == 'style':
+      styledefs = av.split(';')
+      av = ''
+      for s in styledefs:
+        (sn, sv) = s.split(':', 1)
+        sn = sn.strip()
+        sv = sv.strip()
+
+        if sn == 'line-height':
+          if sv == '15.1pt' or sv == '100%' or sv == 'normal':
+            sv = ''
+
+        elif sn == 'color':
+          if sv == 'black' or sv == '#000' or sv == '#000000':
+            sv = ''
+
+        elif sn.startswith('margin'):
+          if sv.isnumeric() and float(sv) < 0.02:
+            sv = ''
+      
+        elif sn.startswith('mso-'):
+          # weird office specific styles? Never check, just delete and hope they didn't do anything
+          sv = ''
+
+        if sv:
+          if av != '':
+            av += '; '
+          # gather possibly-chsnged styles
+          av += sn + ': ' + sv
+
+    # check if tags have changed
+    # also change uppercase attribute names to lower
+    if an != can or av != cav.lower():
+      if an != can or not av:
+        del t[can]
+      if av:
+        t[an] = av
+
+# Get style attribute from tag, return it as dictionary
+def getstyle(t):
+  s = t.get('style')
+  r = {}
+  if s:
+    for styledef in s.split(';'):
+      (sn, sv) = s.split(':', 1)
+      r[sn.strip().lower()] = sv.strip()
+  return r
 
 ##### Start the action
 
@@ -306,44 +392,11 @@ for t in r:
     movecontentsbefore(t, t)
   t.extract()
 
-# Remove all 'b' that only contain whitespace
+# Remove tags that only contain whitespace
 # (do not remove the contents. Move the contents outside; remove the tags.)
 removetagcontainingwhitespace('strong')
 removetagcontainingwhitespace('em')
-
-
-# Look through 'span' tags.
-# Delete 'lang' and 'style' attributes from it; if it's then empty, delete all of it
-# (I know this is DANGEROUS, as some style attributes might actually be useful
-#  but I haven't seen any yet. So advantages outweigh dangers, so far.)
-r = soup.findAll('span')
-for t in r:
-  #delattr(t, 'lang')
-  #delattr(t, 'style') ###### DANGER?
-  del t['lang']
-  del t['style'] ###### DANGER?
-  if len(t.attrs) == 0:
-    movecontentsbefore(t, t)
-    t.extract()
-
-# replace 'font color=' with 'span color=' -- it's more XHTML compliant and no hassle
-r = soup.findAll('font')
-for t in r:
-  if len(t.attrs) == 1:
-    v = t.get('color')
-    if v:
-      if v == 'black' or v == '0' or v == '#000' or v == '#000000':
-        # delete black color definition, because the general color is already black.
-        # (There is danger in this, because this font declaration could be inside a redefined color area!
-        # But I haven't seen that so far, so the advantages are bigger than the danger.)
-        movecontentsbefore(t, t)
-      else:
-        e = Tag(soup, 'span')
-        #setattr(e, 'color', v)
-        e['color'] = v ## Does this now always work? Otherwise use __setitem__()?
-        t.parent.insert(t.indexInParent(), e)
-        movecontentsinside(t, e)
-      t.extract()
+removetagcontainingwhitespace('font')
 
 #NO. Don't do this. Keep the 'b's outside the 'a's... Keep this code for reference, maybe later...
 #
@@ -500,13 +553,94 @@ for t in r:
 # Delete/change superfluous 'align' attributes (and <center> tags sometimes)
 checkalign(soup.body, 'left')
 
-# There may be empty 'div's now, without attributes.
-# (Maybe assigned by the code which stripped tables, and then the align attribute got removed by checkalign())
-# Delete them.
-for t in soup.findAll('div'):
+
+# replace 'font color=' with 'span color=' -- it's more XHTML compliant and no hassle
+# replace 'font' tags with style attributes. First look if there is a single
+# encompassing div/span/p, then look whether font encompasses a single one, otherwise create a 'span' tag in place.
+r = soup.findAll('font')
+for t in r:
+  e = None
+  innerdest = False
+
+  ee = t.parent
+  s = t.__repr__() 
+  if s.startswith('<p>') or s.startswith('<p ' )or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
+    r1 = ee.findAll(recursive=False)
+    if len(r1) == 1: # only font
+      r1 = ee.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)
+      if len(r1) == 0:
+        # parent has only one child tag (the font) and no non-whitespace navstrings
+        # so we can dump all our style attributes here
+        e = ee
+        innerdest = True
+  if e is None:
+    r1 = ee.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)
+    if len(r1) == 0:
+      r1 = ee.findAll(recursive=False)
+      if len(r1) == 1:
+        # only one child tag and no non-ws tag
+        s = r1[0].__repr__()
+        if s.startswith('<p>') or s.startswith('<p ' )or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
+          e = r1[0]
+  if e is None:
+    # cannot use a direct parent/child. Make a new span
+    e = Tag(soup, 'span')
+    t.parent.insert(t.indexInParent(), e)
+
+  # get the styles which we're going to add to -- as a dict
+  estyle = getstyle(e)
+  #t.attrs is list of tuples
+  # so if you loop through it, you get tuples back
+  # still you can USE it as a dict type. So you can assign and delete stuff by key
+  # however you may not delete stuff by key while iterating of the list of attrs! That makes the iterator break off...
+
+  # create list of keys first
+  attrs = []
+  for attr in t.attrs:
+    attrs.append(attr[0])
+  # iterate over attributes (note: you get them as a list of tuples)
+  for can in attrs:
+    an = can.lower()
+    av = t.get(can)
+    sn = ''
+
+    if an == 'color':
+      sn = 'color'
+    elif an == 'face':
+      sn = 'font-family'
+    elif an == 'size':
+      sn = 'font-size'
+
+    if sn:
+      # ignore the property if you want to assign to a span/div/p inside the font tag, and that already has the same property
+      if not (innerdest and sn in s):
+        estyle[sn] = av
+      del t[an]
+
+  # put the style into e
+  s = ''
+  for sn in estyle:
+    if s != '':
+      s += '; '
+    s += sn + ': ' + estyle[sn]
+  e['style'] = s
+
+  # Since the font tag has only above 3 possible attributes, it should be empty now
+  # but still check... Do not delete the font tag if it has 'unknown' properties
   if len(t.attrs) == 0:
-    movecontentsbefore(t, t)
-    t.extract()
+      movecontentsinside(t, e)
+      t.extract()
+
+# Look through tags, changes some attributes
+# AND div/span tags without attributes. (There may be those, left by checkalign())
+# (This should be under the font-elimination code since that may have put font sizes & colors in a tag, which we will delete here)
+for v in ('span', 'div', 'p'):
+  for t in soup.findAll(v):
+    mangleattributes(t)
+    if len(t.attrs) == 0 and (v == 'span' or v == 'div'):
+      movecontentsbefore(t, t)
+      t.extract()
+
 
 # The 'real contents' are now at the same level as the 'row of menu buttons' on top and
 # bottom, which we don't want. Hence it is not so easy to make an XSLT transform for 
