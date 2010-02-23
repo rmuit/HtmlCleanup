@@ -242,31 +242,32 @@ def mangleattributes(t):
       styledefs = av.split(';')
       av = ''
       for s in styledefs:
-        (sn, sv) = s.split(':', 1)
-        sn = sn.strip()
-        sv = sv.strip()
+        if s.strip() != '':
+          (sn, sv) = s.split(':', 1)
+          sn = sn.strip()
+          sv = sv.strip()
 
-        if sn == 'line-height':
-          if sv == '15.1pt' or sv == '100%' or sv == 'normal':
+          if sn == 'line-height':
+            if sv == '15.1pt' or sv == '100%' or sv == 'normal':
+              sv = ''
+
+          elif sn == 'color':
+            if sv == 'black' or sv == '#000' or sv == '#000000':
+              sv = ''
+
+          elif sn.startswith('margin'):
+            if sv.isnumeric() and float(sv) < 0.02:
+              sv = ''
+        
+          elif sn.startswith('mso-'):
+            # weird office specific styles? Never check, just delete and hope they didn't do anything
             sv = ''
 
-        elif sn == 'color':
-          if sv == 'black' or sv == '#000' or sv == '#000000':
-            sv = ''
-
-        elif sn.startswith('margin'):
-          if sv.isnumeric() and float(sv) < 0.02:
-            sv = ''
-      
-        elif sn.startswith('mso-'):
-          # weird office specific styles? Never check, just delete and hope they didn't do anything
-          sv = ''
-
-        if sv:
-          if av != '':
-            av += '; '
-          # gather possibly-chsnged styles
-          av += sn + ': ' + sv
+          if sv:
+            if av != '':
+              av += '; '
+            # gather possibly-chsnged styles
+            av += sn + ': ' + sv
 
     # check if tags have changed
     # also change uppercase attribute names to lower
@@ -648,11 +649,10 @@ for v in ('span', 'div', 'p'):
 #
 # Do: Take the first & last tag out - IF these are paragraphs contain navigation buttons
 # (ignore the possibility of NavigableStrings before first/after last tags)
-#r = soup.body.findAll(recursive=False)
-r = soup.body.contents
 rx1 = re.compile('^\<p(?:\s|\>)')
 rx2 = re.compile('^\<a href=\"(?:[^\"]*\/)?index.htm\"')
-rx3 = re.compile('^\<img src=\"_derived\/[^\>]+\/\>$')
+rx3 = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
+r = soup.body.contents
 if str(r[0]) == '\n':
   # we want the first newline to remain there,
   # so the body tag will be on a line by itself
@@ -660,7 +660,7 @@ if str(r[0]) == '\n':
 else:
   i = 0
 v = 3
-while v:
+while v >= 0:
   # find whitespace _before_ the real content
   # this will likely be 'markup whitespace' (newlines) that are unnecessary now
   # Removing 'HTML whitespace' (like breaks/nbsp) has its effect on the actual page -but delete it anyway. I think we want to unify 'space at the start' anyway.
@@ -670,26 +670,26 @@ while v:
     if len(r[i].contents) == 0:
       # extract empty paragraph at start -- that's just as "whitespace" as the above
       r[i].extract()
-    elif v == 3:
-      # look for the buttons
-      e = r[i].findNext()
-      if matchstring(e, rx2):
-        r[i].extract()
-        v = 2
-      else:
-        v = 0 # other nonempty paragraph
-    elif v == 2:
-      # look for a header title image (which is superfluous because the title's also in the page)
-      rr = r[i].findAll()
-      if len(rr) == 1 and matchstring(rr[0], rx3):
-        r[i].extract()
-        v = 1
-      else:
-        v = 0 # other nonempty paragraph
+    elif v:
+      if v == 3 or v == 1:
+        # look for the buttons (only once) - sometimes these are above, sometimes below the title image
+        e = r[i].findNext()
+        if matchstring(e, rx2):
+          r[i].extract()
+          v -= 1
+          continue
+      if v == 3 or v == 2:
+        # look for a header title image (which is superfluous because the title's also in the page)
+        rr = r[i].findAll()
+        if len(rr) == 1 and matchstring(rr[0], rx3):
+          r[i].extract()
+          v -= 2
+          continue
+      v = -1 # other nonempty paragraph
     else:
-      v = 0 # other nonempty paragraph while v==1
+      v = -1 # other nonempty paragraph while v==0
   else:
-    v = 0 # other tag/NavigableString
+    v = -1 # other tag/NavigableString
 
 # Last
 # NB: this is partly effectively extractwhitespacefromend() - but intermixed with empty <p> tags too
