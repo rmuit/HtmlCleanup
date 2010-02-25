@@ -28,17 +28,19 @@ if len(args) != 1:
 def movecontentsbefore(fromwithin, tobefore):
   movecontentsinside(fromwithin, tobefore.parent, tobefore.indexInParent())
 
-def movecontentsinside(fromwithin, toinside, startindex=0):
+def movecontentsinside(fromwithin, toinside, insertindex=0, fromindex = 0):
   r = fromwithin.contents
-  i = startindex
-  while len(r):
-    toinside.insert(i, r[0])
+  i = insertindex
+  while len(r) > fromindex:
+    toinside.insert(i, r[fromindex])
     i = i + 1
 
 ### THIS REGEX IS REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
 #
 rx = re.compile('^(?:\s|\&nbsp\;|\<br \/\>)+$')
 rxe = re.compile('(?:\s|\&nbsp\;|\<br \/\>)+$')
+rs = re.compile('^\s+$')
+rss = re.compile('^\s+')
 #NB: the \n and ' ' are probably not necessary here because they do not affect the 
 # rendering of the document (and taking the '\n' away as we are doing now may
 # be worse for readability of the source?) ...
@@ -460,7 +462,46 @@ for t in r:
     else:
       e.replaceWith(s)
     e = ee
-
+# when inside a paragraph, replace (exactly) two consecutive br's by a paragraph ending/start
+r= soup.findAll('br')
+for t in r:
+  # Thanks to previous, newlines before brs have gone so we can just do nextSibling
+  t2 = t.nextSibling
+  if t2.__repr__() == '<br />':
+    e = t.previousSibling
+    if e.__repr__() != '<br />':
+      e = t2.nextSibling
+      if e.__repr__() != '<br />':
+        pe = t.parent
+        s = pe.__repr__()
+        if s.startswith('<p>') or s.startswith('<p '):
+          # Move contents after ee to a new paragraph
+          # if ee is 'markup whitespace', remove it (because it would be at the
+          # start of a new paragraph, or lingering around at the end if ee==None)
+          e = t2.nextSibling
+          while e != None and matchstring(e, rs):
+            # remove this whitespace which would otherwise be at the start of
+            e.extract()
+            e = t2.nextSibling
+          if e == None:
+            # The two br's were at the end of a paragraph. Weirdness.
+            # Move them outside (just after) the paragraph.
+            pe.parent.insert(pe.indexInParent() + 1, t2)
+            pe.parent.insert(pe.indexInParent() + 1, t)
+          else:
+            # If e (the start of the new paragraph) now _starts_ with markup whitespace, remove that.
+            if matchstring(e, rss):
+              s = rss.sub('', str(e))
+              e.replaceWith(s)
+            i = pe.indexInParent() + 1
+            e = NavigableString('\n')
+            pe.parent.insert(i,e)
+            e = Tag(soup, 'p')
+            pe.parent.insert(i + 1, e)
+            movecontentsinside(pe, e, 0, t2.indexInParent() + 1)
+            t2.extract()
+            t.extract()
+          
 # Delete tables with one TR having one TD - these are useless
 # (take their contents out of the tables)
 r = soup.findAll('table')
@@ -565,7 +606,7 @@ for t in r:
 
   ee = t.parent
   s = t.__repr__() 
-  if s.startswith('<p>') or s.startswith('<p ' )or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
+  if s.startswith('<p>') or s.startswith('<p ') or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
     r1 = ee.findAll(recursive=False)
     if len(r1) == 1: # only font
       r1 = ee.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)
