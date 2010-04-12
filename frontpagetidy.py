@@ -6,11 +6,9 @@
 # Version: 20100217/ipce.info
 
 from optparse import OptionParser
+import os
 import re
 from BeautifulSoup import BeautifulSoup, Tag, NavigableString, Comment
-
-c_common_font = 'Book Antiqua, Times New Roman, Times'
-c_img_bullet_re = 'expbul.?.?\.gif$'
 
 # We have no options as yet, but still this is a convenient way of printing usage
 #usage = "usage: %prog [options] arg1 arg2"
@@ -22,6 +20,16 @@ if len(args) != 1:
   a.print_help()
   exit()
 
+## 'constants'
+
+fname = args[0]
+if os.path.abspath(fname).find('ipce') != -1:
+  c_common_font = 'Book Antiqua, Times New Roman, Times'
+  c_img_bullet_re = 'expbul.?.?\.gif$'
+else:
+  c_common_font = 'Arial, Helvetica'
+  c_img_bullet_re = 'posbul.?.?\.gif$'
+  
 ### Function definitions
 
 # move all contents out of one tag, to just before the other tag
@@ -200,7 +208,9 @@ def checkalign(pe, parentalign, pallowchange = ''):
 
 # Filter out attributes from a tag; change some others
 #
-def mangleattributes(t):
+# tagname is really a duplicate argument that could be derived from t
+# but stupidly, there's no nice argument for that?
+def mangleattributes(t, tagname):
   #t.attrs is list of tuples
   # so if you loop through it, you get tuples back
   # still you can USE it as a dict type. So you can assign and delete stuff by key
@@ -229,6 +239,11 @@ def mangleattributes(t):
         t['class'] = 'align-' + av
       av = ''
 
+    elif an == 'margin-top':
+      # on ploog, this is present in almost every paragraph. Should be made into standard css definition.
+      if tagname == 'p':
+        av = ''
+
     elif an == 'class':
       classes = cav.split()
       for av in classes:
@@ -250,11 +265,25 @@ def mangleattributes(t):
           sv = sv.strip()
 
           if sn == 'line-height':
-            if sv == '15.1pt' or sv == '100%' or sv == 'normal':
+            if sv == '15.1pt' or sv == '15.1 pt' or sv == '100%' or sv == 'normal':
               sv = ''
 
           elif sn == 'color':
             if sv == 'black' or sv == '#000' or sv == '#000000':
+              sv = ''
+
+          elif sn == 'text-autospace':
+            if sv == 'none':
+              sv = ''
+          
+          elif sn == 'font-family':
+            if sv == 'arial' and c_common_font.find('Arial') == 0:
+              sv = ''
+
+          elif sn == 'font-size':
+            #on ploog, I see '12pt' and '3' and I see no difference
+            # Possibly, this should only be stripped on ploog. Use trick for that
+            if (sv == '12pt' or sv == '3') and c_common_font.find('Arial') == 0:
               sv = ''
 
           elif sn.startswith('margin'):
@@ -291,7 +320,6 @@ def getstyle(t):
 
 ##### Start the action
 
-fname = args[0]
 html = open(fname).read()
 html = html.replace('\r\n','\n')
 
@@ -673,12 +701,15 @@ for t in r:
       movecontentsinside(t, e)
       t.extract()
 
-# Look through tags, changes some attributes
-# AND div/span tags without attributes. (There may be those, left by checkalign())
-# (This should be under the font-elimination code since that may have put font sizes & colors in a tag, which we will delete here)
-for v in ('span', 'div', 'p'):
+# Look through tags, change some attributes if necessary,
+# AND delete div/span tags without attributes. (There may be those, left by checkalign())
+# (This should be after the font-elimination code since that may have put font sizes & colors in a tag, which we will delete here)
+#
+# (h2 / h4 tags with cleanable attributes found in p-loog.info)
+for v in ('span', 'div', 'p', 'h2', 'h3', 'h4'):
   for t in soup.findAll(v):
-    mangleattributes(t)
+    # pass v as second argument. I know that's duplicate but t has no easy property to derive v from?
+    mangleattributes(t, v)
     if len(t.attrs) == 0 and (v == 'span' or v == 'div'):
       movecontentsbefore(t, t)
       t.extract()
@@ -691,7 +722,9 @@ for v in ('span', 'div', 'p'):
 # Do: Take the first & last tag out - IF these are paragraphs contain navigation buttons
 # (ignore the possibility of NavigableStrings before first/after last tags)
 rx1 = re.compile('^\<p(?:\s|\>)')
-rx2 = re.compile('^\<a href=\"(?:[^\"]*\/)?index.htm\"')
+# button links. Usually there's one to the index page but not always
+# the 'nieuw' is for the p-loog index page which doesn't
+rx2 = re.compile('^\<a href=\"(?:[^\"]*\/)?(?:index|nieuw).htm\"')
 rx3 = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
 r = soup.body.contents
 if str(r[0]) == '\n':
@@ -718,6 +751,9 @@ while v >= 0:
         if matchstring(e, rx2):
           r[i].extract()
           v -= 1
+          
+          # if, right after the paragraph with buttons, there's again a paragraph containing links to categories... delete that too.
+          # OR NOT? ... leave that idea for now...
           continue
       if v == 3 or v == 2:
         # look for a header title image (which is superfluous because the title's also in the page)
