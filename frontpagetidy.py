@@ -324,6 +324,9 @@ html = open(fname).read()
 html = html.replace('\r\n','\n')
 
 ########
+#
+# Clean up screwy HTML before parsing - #1:
+#
 # Strip superfluous font tag, because FrontPage does stuff
 #  like <font> <center> </font> </center>, which makes HTMLTidy wronlgy 
 #  'correct' stuff that would be fine if those font tags weren't there.
@@ -366,6 +369,18 @@ while True:
   #  print str(ps) + ' ' + str(pe)
   #else: 
   #  print 'skipped: ' + str(ps) + ' ' + str(pe)
+
+########
+#
+# Clean up screwy HTML before parsing - #2:
+#
+# solve <b><p > .... </b> ... </p> by putting <b> inside <p>
+# (if not, BeatifulSoup will put a </p> before the </b> which will mess up formatting)
+rx1 = re.compile('\<b\>(\s*\<p.*?\>)(.*?)\<\/b>', re.S)
+for r in rx1.finditer(html):
+  if r.group(2).find('/p>') == -1:
+    html = html[:r.start()] + r.group(1) + '<b>' + html[r.start(2):]
+    # since html stays just as long, the finditer will be OK?
 
 ##############
 #
