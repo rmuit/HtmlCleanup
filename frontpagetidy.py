@@ -3,7 +3,7 @@
 # Read old MS FrontPage HTML document and tidy it up.
 # Contains site specific functions, so the script will need to be changed somewhat
 # for every site.
-# Version: 20100217/ipce.info
+# Version: 20100414/ploog+ipce.info
 
 from optparse import OptionParser
 import os
@@ -36,8 +36,27 @@ if os.path.abspath(fname).find('ipce') != -1:
 else:
   c_common_font = 'Arial, Helvetica'
   c_img_bullet_re = 'posbul.?.?\.gif$'
-  
-### Function definitions
+
+### THIS REGEX IS REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
+#
+rx = re.compile('^(?:\s|\&nbsp\;|\<br \/\>)+$')
+rxnl = re.compile('\S\n$')
+rxe = re.compile('(?:\s|\&nbsp\;|\<br \/\>)+$')
+rs = re.compile('^\s+$')
+rss = re.compile('^\s+')
+#NB: the \n and ' ' are probably not necessary here because they do not affect the 
+# rendering of the document (and taking the '\n' away as we are doing now may
+# be worse for readability of the source?) ...
+# ...but I'll leave it in anyway, until I'm sure. Things work now, anyway.
+#NB2: above is not really correct. They should be in the regexp
+# because strings can be compound, like '\r\n        &nbsp;&nbsp;'
+#NB3: this regex can be used on all elements - but it will match _either_ a 'br'
+# _or_ a combination of anything else - because 'br's are Tags, not in a NavigableString
+
+ 
+###
+### Functions 1/3: helper functions which are pretty much general
+###
 
 # return index of element inside parent contents
 def indexInParent(slf):
@@ -64,27 +83,16 @@ def movecontentsinside(fromwithin, toinside, insertindex=0, fromindex = 0):
     toinside.insert(i, r[fromindex])
     i = i + 1
 
-### THIS REGEX IS REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
-#
-rx = re.compile('^(?:\s|\&nbsp\;|\<br \/\>)+$')
-rxe = re.compile('(?:\s|\&nbsp\;|\<br \/\>)+$')
-rs = re.compile('^\s+$')
-rss = re.compile('^\s+')
-#NB: the \n and ' ' are probably not necessary here because they do not affect the 
-# rendering of the document (and taking the '\n' away as we are doing now may
-# be worse for readability of the source?) ...
-# ...but I'll leave it in anyway, until I'm sure. Things work now, anyway.
-#NB2: above is not really correct. They should be in the regexp
-# because strings can be compound, like '\r\n        &nbsp;&nbsp;'
-#NB3: this regex can be used on all elements - but it will match _either_ a 'br'
-# _or_ a combination of anything else - because 'br's are Tags, not in a NavigableString
-
 def matchstring(e, rx):
   # Difficulty here: str(ee) may give UnicodeEncodeError with some characters
   # and so may ee.__str__() and repr(ee) (the latter with some \x?? chars).
   # The only thing sure to not give errors is ee.__repr__()
   # However you don't want to use THAT for matching! So use it as a safety net
   # to make sure str() is not called when unicode chars are in there
+  #
+  # Yeah, I know, it's probably just my limited Python knowledge, that made me
+  # write this function...
+  # (If it isn't a bug in BeautifulSoup 3.1; probably not.)
   s = e.__repr__()
   if s.find('\\u') != -1 or s.find('\\x') != -1:
     return False
@@ -104,7 +112,6 @@ def removetagcontainingwhitespace(tagname):
       movecontentsbefore(e, e)
       e.extract()
       
-rxnl = re.compile('\S\n$')
 def extractwhitespacefromend(t):
   r = t.contents
   while len(r):
@@ -125,6 +132,21 @@ def extractwhitespacefromend(t):
     else:
       break
 
+# Get style attribute from tag, return it as dictionary
+def getstyle(t):
+  s = t.get('style')
+  r = {}
+  if s:
+    for styledef in s.split(';'):
+      (sn, sv) = s.split(':', 1)
+      r[sn.strip().lower()] = sv.strip()
+  return r
+
+###
+### Functions 2/3: helper functions which have logic (like tag/attribute names)
+### encoded in them
+###
+
 # Check alignments of all elements inside a certain parent element.
 # If alignment of an element is explicitly specified AND equal to the specified parent
 #  alignment, then delete that explicit attribute
@@ -134,7 +156,10 @@ def extractwhitespacefromend(t):
 # NOTES:
 # This function currently checks only for the 'align' attribute, which is deprecated.
 # There's the 'style="text-align: ..."' which should be used instead
-# (should be replaced, but theoretically also checked)
+# We now have mangleattributes() to change one into the other, so:
+# - this function currently MUST be called before mangleattributes()
+# - this function should ideally should be changed to check for 'whatever 
+#   mangleattributes() changed it to' (LOOK THERE) and be called afterwards
 def checkalign(pe, parentalign, pallowchange = ''):
 
   ## first: special handling for 'implicitly aligning tags', i.e. <center>
@@ -162,7 +187,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
     s = t.__repr__() 
     talign = t.get('align')
     if talign:
-#NOTE: 'align' can also be "middle"... ignore that for now until I see it being used on non-nivigation-images
+#NOTE: 'align' can also be "middle"... ignore that for now until I see it being used on non-navigation-images
       thisalign = talign
       allowchange = 'any'
     elif s.startswith('<center>'):
@@ -226,6 +251,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
 # Ideas for this routine:
 # - if all your stuff is 'center', and more than one (and not inherit), then insert a 'center', place everything inside, and then delete all the explicit align=center from these tags
 # - replace 'middle' by 'center'? (align=middle is used for pictures, I've seen sometimes.)
+
 
 # Filter out attributes from a tag; change some others
 #
@@ -329,22 +355,23 @@ def mangleattributes(t, tagname):
       if av:
         t[an] = av
 
-# Get style attribute from tag, return it as dictionary
-def getstyle(t):
-  s = t.get('style')
-  r = {}
-  if s:
-    for styledef in s.split(';'):
-      (sn, sv) = s.split(':', 1)
-      r[sn.strip().lower()] = sv.strip()
-  return r
-
 ##### Start the action
 
 html = open(fname).read()
 html = html.replace('\r\n','\n')
 
-########
+###
+### Functions -I mean functionality- 3/3:
+###   Helper functionality that operates on the HTML (mangles it) BEFORE it
+###   gets parsed by BeautifulSoup.
+### NOTES:
+### - For now I didn't convert this to a function because it would only imply
+###   passing a huge 'html' string as the argument & return value
+### - but now, there are a few lines of 'global' code which are executed already
+###   (the ones filling the html string)
+###
+
+#####
 #
 # Clean up screwy HTML before parsing - #1:
 #
@@ -391,7 +418,7 @@ while True:
   #else: 
   #  print 'skipped: ' + str(ps) + ' ' + str(pe)
 
-########
+#####
 #
 # Clean up screwy HTML before parsing - #2:
 #
@@ -404,8 +431,8 @@ for r in rx1.finditer(html):
     # since html stays just as long, the finditer will be OK?
 
 ##############
-#
-# Now do some tidying work, using BeautifulSoup
+###
+### Now do the tidying work, using BeautifulSoup
 
 soup = BeautifulSoup(html)
 
@@ -750,6 +777,11 @@ for v in ('span', 'div', 'p', 'h2', 'h3', 'h4'):
       movecontentsbefore(t, t)
       t.extract()
 
+#####
+#####
+## Code below here is really custom. It removes certain contents from the top/
+## bottom of the HTML. You may have no use for it; please remove.
+## Only keep the last 'print' statement.
 
 # The 'real contents' are now at the same level as the 'row of menu buttons' on top and
 # bottom, which we don't want. Hence it is not so easy to make an XSLT transform for 
@@ -834,8 +866,6 @@ while v:
       v = 0 # other nonempty paragraph while v==1
   else:
     v = 0 # other tag/NavigableString
-
-
 
 ###TODO: remove unnecessary html entities like &ldquo, or stuff?
 # no, FG might object to "different" quotes?
