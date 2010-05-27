@@ -20,9 +20,16 @@ if len(args) != 1:
   a.print_help()
   exit()
 
-## 'constants'
-
 fname = args[0]
+
+### 'constants' for constructs we need to use in site specific code:
+# 
+#  - the font name (used in all illegal font tags which should be stripped out
+#    before even feeding the HTML to BeautifulSoup
+#  - name of the image which should be converted to 'li' tag when found
+#
+## if you use this script for different sites, insert favourite way of
+## distinguishing between them, here:
 if os.path.abspath(fname).find('ipce') != -1:
   c_common_font = 'Book Antiqua, Times New Roman, Times'
   c_img_bullet_re = 'expbul.?.?\.gif$'
@@ -32,9 +39,23 @@ else:
   
 ### Function definitions
 
+# return index of element inside parent contents
+def indexInParent(slf):
+  # (Maybe there is a better way than this; I used to have this in a patched
+  # version of the BeautifulSoup.py library 3.1.0.1 itself, before I started
+  # working with the non-buggy v3.0.8.1. So I just took the function out
+  # and didn't look further)
+  index = 0
+  while index < len(slf.parent.contents):
+    if slf.parent.contents[index] is slf:
+      return index
+    index = index + 1
+  # if this happens, something is really wrong with the data structure:
+  return None
+
 # move all contents out of one tag, to just before the other tag
 def movecontentsbefore(fromwithin, tobefore):
-  movecontentsinside(fromwithin, tobefore.parent, tobefore.indexInParent())
+  movecontentsinside(fromwithin, tobefore.parent, indexInParent(tobefore))
 
 def movecontentsinside(fromwithin, toinside, insertindex=0, fromindex = 0):
   r = fromwithin.contents
@@ -402,13 +423,13 @@ r = soup.findAll(text=lambda text:isinstance(text, Comment))
 r = soup.findAll('b')
 for t in r:
   e = Tag(soup, 'strong')
-  t.parent.insert(t.indexInParent(), e)
+  t.parent.insert(indexInParent(t), e)
   movecontentsinside(t, e)
   t.extract()
 r = soup.findAll('i')
 for t in r:
   e = Tag(soup, 'em')
-  t.parent.insert(t.indexInParent(), e)
+  t.parent.insert(indexInParent(t), e)
   movecontentsinside(t, e)
   t.extract()
 
@@ -480,7 +501,7 @@ for t in r:
         e.extract()
       # make 'strong' tag and move e inside it
       e = Tag(soup, 'strong')
-      t.parent.insert(t.indexInParent(), e)
+      t.parent.insert(indexInParent(t), e)
       e.insert(0, t)
 
 # remove whitespace at end of paragraphs
@@ -529,19 +550,19 @@ for t in r:
           if e == None:
             # The two br's were at the end of a paragraph. Weirdness.
             # Move them outside (just after) the paragraph.
-            pe.parent.insert(pe.indexInParent() + 1, t2)
-            pe.parent.insert(pe.indexInParent() + 1, t)
+            pe.parent.insert(indexInParent(pe) + 1, t2)
+            pe.parent.insert(indexInParent(pe) + 1, t)
           else:
             # If e (the start of the new paragraph) now _starts_ with markup whitespace, remove that.
             if matchstring(e, rss):
               s = rss.sub('', str(e))
               e.replaceWith(s)
-            i = pe.indexInParent() + 1
+            i = indexInParent(pe) + 1
             e = NavigableString('\n')
             pe.parent.insert(i,e)
             e = Tag(soup, 'p')
             pe.parent.insert(i + 1, e)
-            movecontentsinside(pe, e, 0, t2.indexInParent() + 1)
+            movecontentsinside(pe, e, 0, indexInParent(t2) + 1)
             t2.extract()
             t.extract()
           
@@ -562,7 +583,7 @@ for t in r:
       # out of there just like that.
       e = Tag(soup, 'div')
       e['align'] = 'left'
-      t.parent.insert(t.indexInParent(), e)
+      t.parent.insert(indexInParent(t), e)
       movecontentsinside(r_td[0], e)
       t.extract()
 
@@ -601,7 +622,7 @@ for t in r:
     # this actually misplaces stuff and the ul may be inserted _before_ a string
     # when it should be inserted after. I don't know a solution for this atm.)
     e = Tag(soup, 'ul')
-    l = t.indexInParent()
+    l = indexInParent(t)
     t.parent.insert(l, e)
     # insert li's and move all the contents from the second td's into there
     # (Is it always legal to just 'dump everything' inside a li? Let's hope so.)
@@ -670,7 +691,7 @@ for t in r:
   if e is None:
     # cannot use a direct parent/child. Make a new span
     e = Tag(soup, 'span')
-    t.parent.insert(t.indexInParent(), e)
+    t.parent.insert(indexInParent(t), e)
 
   # get the styles which we're going to add to -- as a dict
   estyle = getstyle(e)
