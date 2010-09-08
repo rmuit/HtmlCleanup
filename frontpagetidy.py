@@ -3,7 +3,7 @@
 # Read old MS FrontPage HTML document and tidy it up.
 # Contains site specific functions, so the script will need to be changed somewhat
 # for every site.
-# Version: 20100414/ploog+ipce.info
+# Version: 20100908/ploog+ipce.info
 
 from optparse import OptionParser
 import os
@@ -138,28 +138,116 @@ def getstyle(t):
   r = {}
   if s:
     for styledef in s.split(';'):
-      (sn, sv) = s.split(':', 1)
-      r[sn.strip().lower()] = sv.strip()
+      (sa, sv) = s.split(':', 1)
+      r[sa.strip().lower()] = sv.strip()
   return r
+
+# Set style (attribute=value).
+# attr must be lowercase; 
+# value must be string type. If value == '', the attribute is deleted.
+def setstyle(t, attr, value):
+  s = t.get('style')
+  r = {}
+
+  ## deconstruct s
+
+  if s:
+    for styledef in s.split(';'):
+      (sa, sv) = s.split(':', 1)
+      r[sa.strip().lower()] = sv.strip()
+
+    ## (re)build s from here
+    
+    if attr in r:
+      # overwrite the new style and compose the full style string again
+      if value != '':
+        r[attr] = value
+      else:
+        del r[attr]
+      s = ''
+      for sa in r:
+        if s != '':
+          s += '; '
+        s += sa + ': ' + r[sa]
+    elif value != '':
+      s = s.strip()
+      if s != '':
+        if not s.endswith(';'):
+          s += ';'
+        s += ' '
+      s += attr + ': ' + value
+  else:
+    s = attr + ': ' + value    
+
+  ## (re)set style
+
+  if s != '':
+    t['style'] = s
+  #elif 'style' in t.attrs: <-- wrong. attrs returns tuples, not keys
+  else:
+    # There's no style left (there was only attr, which you just deleted)
+    del t['style']
+
 
 ###
 ### Functions 2/3: helper functions which have logic (like tag/attribute names)
 ### encoded in them
 ###
 
+# Get alignment from a tag
+# look in attributes 'align' & 'style: text-align' (in that order)
+# Return 'left', 'center', 'right' or ''
+def getalign(t):
+  talign = t.get('align')
+  if not talign:
+    s = getstyle(t)
+    if 'text-align' in s:
+      talign = s['text-align']
+  #align=middle is seen in some images
+  if talign == 'middle':
+    talign = 'center'
+  return talign
+
+# Set alignment (or delete it, by setting value to '')
+# Do this in 'text-align' style attribute
+# (we could also e.g. set a certain class; if we wanted)
+# and delete the 'align' attrbute.
+# Exception: <img>
+def setalign(t, value):
+  # special handling for images, since the (deprecated?)
+  # 'align' tag governs their own alignment - not their contents'
+  # alignment. So don't do 'text-align' there.
+  s = t.__repr__() 
+  if not s.startswith('<img '):
+    setstyle(t, 'text-align', value)
+  elif value != '':
+    t['align'] = value
+    return
+  
+  # text-align is set. Delete the deprecated align attribute (if present)
+  del t['align']
+
+#== Note: below was the code I was using somewhere else before,
+#   in stead of setstyle(). Maybe we want to go back to using that someday
+#   though I don't think so...
+      # Replace this outdated attribute by a 'class="align-..."' attribute
+      #  Assumes you have those classes defined in CSS somewhere!
+      # (We can also go for a 'style: text-align=...' attribute, but I'd like to have less explicit style attributes in the HTML source if I can, so make a 'layer')
+      #sv = t.get('class')
+      #if sv:
+      #  # assume this class is not yet present
+      #  t['class'] = sv + ' align-' + av
+
+      #else:
+      #  t['class'] = 'align-' + av
+      #av = ''
+#===
+  
 # Check alignments of all elements inside a certain parent element.
 # If alignment of an element is explicitly specified AND equal to the specified parent
 #  alignment, then delete that explicit attribute
 # If alignment of ALL elements is the same AND NOT equal to the specified parent
 # alignment, then change the parent's alignment property IF that is allowed.
-#
-# NOTES:
-# This function currently checks only for the 'align' attribute, which is deprecated.
-# There's the 'style="text-align: ..."' which should be used instead
-# We now have mangleattributes() to change one into the other, so:
-# - this function currently MUST be called before mangleattributes()
-# - this function should ideally should be changed to check for 'whatever 
-#   mangleattributes() changed it to' (LOOK THERE) and be called afterwards
 def checkalign(pe, parentalign, pallowchange = ''):
 
   ## first: special handling for 'implicitly aligning tags', i.e. <center>
@@ -185,9 +273,8 @@ def checkalign(pe, parentalign, pallowchange = ''):
   for t in r:
 
     s = t.__repr__() 
-    talign = t.get('align')
+    talign = getalign(t)
     if talign:
-#NOTE: 'align' can also be "middle"... ignore that for now until I see it being used on non-navigation-images
       thisalign = talign
       allowchange = 'any'
     elif s.startswith('<center>'):
@@ -214,16 +301,14 @@ def checkalign(pe, parentalign, pallowchange = ''):
       if 'CHANGE' in tal:
         # align needs change
         # (we may end up deleting it just afterwards, but this way keeps code clean)
-        #setattr(t, 'align', tal['CHANGE'])
-        t['align'] = tal['CHANGE'] ## Does this now always work? Otherwise use __setitem__()?
+        setalign(t, tal['CHANGE'])
         talign = tal['CHANGE']
 
       if talign:
         ## explicit/changed alignment
         if talign == parentalign:
           # delete (now-)superfluous explicit 'align' attribute in tag
-          #delattr(t, 'align')
-          del t['align']
+          setalign(t, '')
           al['inherit'] = True
         else:
           # We're just collecting alignments 'not equal to inherited' here;
@@ -245,7 +330,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
     al['CHANGE'] = lastalign
     # Delete any explicit attribute because we will change the parent's.
     for t in pe.findAll(align=lastalign, recursive=False):
-      del t['align']
+      setalign(t, '')
 
   return al
 # Ideas for this routine:
@@ -274,17 +359,10 @@ def mangleattributes(t, tagname):
     av = cav.lower()
 
     if an == 'align':
-      # Replace this outdated attribute by a 'class="align-..."' attribute
-      #  Assumes you have those classes defined in CSS somewhere!
-      # (We can also go for a 'style: align=...' attribute, but I'd like to have less explicit style attributes in the HTML source if I can, so make a 'layer')
-      sv = t.get('class')
-      if sv:
-        # assume this class is not yet present
-        t['class'] = sv + ' align-' + av
-
-      else:
-        t['class'] = 'align-' + av
-      av = ''
+      # Replace deprecated align attribute by newer way
+      # (Unlike the below, this call already resets the 'align' attribute
+      #  itself, so we do not set av to '')
+      setalign(t, av)
 
     elif an == 'margin-top':
       # on ploog, this is present in almost every paragraph. Should be made into standard css definition.
@@ -606,10 +684,10 @@ for t in r:
       t.extract()
     elif len(r_td) == 1:
       #movecontentsbefore(r_td[0], t)
-      # content inside a 'td' is left aligned by default, so we can't yank everything
-      # out of there just like that.
+      # content inside a 'td' is left aligned by default, so we
+      # need to accomodate for that.
       e = Tag(soup, 'div')
-      e['align'] = 'left'
+      e['style'] = 'text-align: left'
       t.parent.insert(indexInParent(t), e)
       movecontentsinside(r_td[0], e)
       t.extract()
@@ -649,6 +727,9 @@ for t in r:
     # this actually misplaces stuff and the ul may be inserted _before_ a string
     # when it should be inserted after. I don't know a solution for this atm.)
     e = Tag(soup, 'ul')
+    # Again: content inside a 'td' is left aligned by default, so we
+    # need to accomodate for that.
+    e['style'] = 'text-align: left'
     l = indexInParent(t)
     t.parent.insert(l, e)
     # insert li's and move all the contents from the second td's into there
@@ -681,10 +762,6 @@ for t in r:
       e.insert(i + 1, ee)
       i = i + 2
     t.extract()
-
-
-# Delete/change superfluous 'align' attributes (and <center> tags sometimes)
-checkalign(soup.body, 'left')
 
 
 # replace 'font color=' with 'span color=' -- it's more XHTML compliant and no hassle
@@ -763,6 +840,11 @@ for t in r:
   if len(t.attrs) == 0:
       movecontentsinside(t, e)
       t.extract()
+
+
+# Delete/change superfluous alignment attributes (and <center> tags sometimes)
+checkalign(soup.body, 'left')
+
 
 # Look through tags, change some attributes if necessary,
 # AND delete div/span tags without attributes. (There may be those, left by checkalign())
