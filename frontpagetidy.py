@@ -23,7 +23,7 @@ if len(args) != 1:
 fname = args[0]
 
 ### 'constants' for constructs we need to use in site specific code:
-# 
+#
 #  - the font name (used in all illegal font tags which should be stripped out
 #    before even feeding the HTML to BeautifulSoup
 #  - name of the image which should be converted to 'li' tag when found
@@ -37,14 +37,14 @@ else:
   c_common_font = 'Arial, Helvetica'
   c_img_bullet_re = 'posbul.?.?\.gif$'
 
-### THIS REGEX IS REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
+### THESE REGEXES ARE REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
 #
-rx = re.compile('^(?:\s|\&nbsp\;|\<br \/\>)+$')
-rxnl = re.compile('\S\n$')
-rxe = re.compile('(?:\s|\&nbsp\;|\<br \/\>)+$')
-rs = re.compile('^\s+$')
-rss = re.compile('^\s+')
-#NB: the \n and ' ' are probably not necessary here because they do not affect the 
+rxglobal_spacehmtl_only = re.compile('^(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
+rxglobal_newline_at_end = re.compile('\S\n$')
+rxglobal_spacehmtl_at_end = re.compile('(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
+rxglobal_spaces_only = re.compile('^\s+$')
+rxglobal_spaces_at_start = re.compile('^\s+')
+#NB: the \n and ' ' are probably not necessary here because they do not affect the
 # rendering of the document (and taking the '\n' away as we are doing now may
 # be worse for readability of the source?) ...
 # ...but I'll leave it in anyway, until I'm sure. Things work now, anyway.
@@ -53,7 +53,7 @@ rss = re.compile('^\s+')
 #NB3: this regex can be used on all elements - but it will match _either_ a 'br'
 # _or_ a combination of anything else - because 'br's are Tags, not in a NavigableString
 
- 
+
 ###
 ### Functions 1/3: helper functions which are pretty much general
 ###
@@ -83,7 +83,7 @@ def movecontentsinside(fromwithin, toinside, insertindex=0, fromindex = 0):
     toinside.insert(i, r[fromindex])
     i = i + 1
 
-def matchstring(e, rx):
+def matchstring(e, rxglobal_spacehmtl_only):
   # Difficulty here: str(ee) may give UnicodeEncodeError with some characters
   # and so may ee.__str__() and repr(ee) (the latter with some \x?? chars).
   # The only thing sure to not give errors is ee.__repr__()
@@ -96,7 +96,7 @@ def matchstring(e, rx):
   s = e.__repr__()
   if s.find('\\u') != -1 or s.find('\\x') != -1:
     return False
-  return rx.search(str(e))
+  return rxglobal_spacehmtl_only.search(str(e))
 
 # Remove all tags that only contain whitespace
 # (do not remove the contents. Move the contents outside; remove the tags.)
@@ -105,13 +105,13 @@ def removetagcontainingwhitespace(tagname):
   for e in r:
     ok = 1
     for ee in e.contents:
-      if not(matchstring(ee, rx)):
+      if not(matchstring(ee, rxglobal_spacehmtl_only)):
         ok = 0
         break
     if ok:
       movecontentsbefore(e, e)
       e.extract()
-      
+
 def extractwhitespacefromend(t):
   r = t.contents
   while len(r):
@@ -122,12 +122,13 @@ def extractwhitespacefromend(t):
       else:
         extractwhitespacefromend(e)
         break
-    elif matchstring(e, rx):
-      # delete whole NavigableString consisting of whitespace
+    elif matchstring(e, rxglobal_spacehmtl_only):
+      # Delete whole NavigableString consisting of whitespace.
       e.extract()
-    elif matchstring(e, rxe) and not rxnl.search(str(e)):
-      # extract whitespace from end of NavigableString (except if it's just a newline for markup; we don't want to get everything on one line...)
-      s = rxe.sub('', str(e))
+    elif matchstring(e, rxglobal_spacehmtl_at_end) and not rxglobal_newline_at_end.search(str(e)):
+      # Extract whitespace from end of NavigableString (except when it's just a
+      # newline for markup; we don't want to get everything on one line...)
+      s = rxglobal_spacehmtl_at_end.sub('', str(e))
       e.replaceWith(s)
     else:
       break
@@ -143,7 +144,7 @@ def getstyle(t):
   return r
 
 # Set style (attribute=value).
-# attr must be lowercase; 
+# attr must be lowercase;
 # value must be string type. If value == '', the attribute is deleted.
 def setstyle(t, attr, value):
   s = t.get('style')
@@ -157,7 +158,7 @@ def setstyle(t, attr, value):
       r[sa.strip().lower()] = sv.strip()
 
     ## (re)build s from here
-    
+
     if attr in r:
       # overwrite the new style and compose the full style string again
       if value != '':
@@ -177,7 +178,7 @@ def setstyle(t, attr, value):
         s += ' '
       s += attr + ': ' + value
   else:
-    s = attr + ': ' + value    
+    s = attr + ': ' + value
 
   ## (re)set style
 
@@ -217,13 +218,13 @@ def setalign(t, value):
   # special handling for images, since the (deprecated?)
   # 'align' tag governs their own alignment - not their contents'
   # alignment. So don't do 'text-align' there.
-  s = t.__repr__() 
+  s = t.__repr__()
   if not s.startswith('<img '):
     setstyle(t, 'text-align', value)
   elif value != '':
     t['align'] = value
     return
-  
+
   # text-align is set. Delete the deprecated align attribute (if present)
   del t['align']
 
@@ -242,7 +243,7 @@ def setalign(t, value):
       #  t['class'] = 'align-' + av
       #av = ''
 #===
-  
+
 # Check alignments of all elements inside a certain parent element.
 # If alignment of an element is explicitly specified AND equal to the specified parent
 #  alignment, then delete that explicit attribute
@@ -263,7 +264,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
   al = {}
   # non-whitespace NavigableStrings always have alignment equal to the parent element
   # (whitespace strings don't matter; alignment can be changed without visible difference)
-  r = pe.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)
+  r = pe.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
   if len(r):
     al['inherit'] = True
     # setting 'inherit' effectively means: prevent parent's alignment from being changed
@@ -272,7 +273,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
   r = pe.findAll(recursive=False)
   for t in r:
 
-    s = t.__repr__() 
+    s = t.__repr__()
     talign = getalign(t)
     if talign:
       thisalign = talign
@@ -400,7 +401,7 @@ def mangleattributes(t, tagname):
           elif sn == 'text-autospace':
             if sv == 'none':
               sv = ''
-          
+
           elif sn == 'font-family':
             if sv == 'arial' and c_common_font.find('Arial') == 0:
               sv = ''
@@ -414,7 +415,7 @@ def mangleattributes(t, tagname):
           elif sn.startswith('margin'):
             if sv.isnumeric() and float(sv) < 0.02:
               sv = ''
-        
+
           elif sn.startswith('mso-'):
             # weird office specific styles? Never check, just delete and hope they didn't do anything
             sv = ''
@@ -454,47 +455,56 @@ html = html.replace('\r\n','\n')
 # Clean up screwy HTML before parsing - #1:
 #
 # Strip superfluous font tag, because FrontPage does stuff
-#  like <font> <center> </font> </center>, which makes HTMLTidy wronlgy 
+#  like <font> <center> </font> </center>, which makes HTMLTidy wronlgy
 #  'correct' stuff that would be fine if those font tags weren't there.
 # Also, accommodate for recursive font tags... because _in between_
 #  these idiotic tags there may be legit ones.
+#
+# We've seen cases where there are also font tags containing _just_ the first
+# family, and we will treat that as equal - i.e. also superfluous / needs to be
+# stripped.
+font_families = [ c_common_font ]
+p = c_common_font.find(',')
+if (p > 0):
+  font_families.append( c_common_font[:p].strip() )
 
-tagToStrip = '<font face="' + c_common_font + '">'
-tagLenEnd = len('</font>')
-pos = 0
-found = []
-while True:
-  # Find a font start/end tag pair, without any other font tags in between
-  # Do this by searching for an end tag, and then storing all the start tags
-  # leading up to it.
-  pe = html.find('</font>', pos)
-  if pe == -1:
-    break
-  #print 'end: ' + str(pe)
-  # Find zero or more start tags and store them all
-  ps = html.find('<font', pos)
-  while (ps < pe and ps != -1):
-    #print 'start: ' + str(ps)
-    found.append(ps)
-    pos = ps + 1
-    ps = html.find('<font', pos)
+len_end_tag = len('</font>')
+for font_family in font_families:
+    s_tag_to_strip = '<font face="' + font_family + '">'
+    pos = 0
+    found = []
+    while True:
+      # Find a font start/end tag pair, without any other font tags in between
+      # Do this by searching for an end tag, and then storing all the start tags
+      # leading up to it.
+      pe = html.find('</font>', pos)
+      if pe == -1:
+        break
+      #print 'end: ' + str(pe)
+      # Find zero or more start tags and store them all
+      ps = html.find('<font', pos)
+      while (ps < pe and ps != -1):
+        #print 'start: ' + str(ps)
+        found.append(ps)
+        pos = ps + 1
+        ps = html.find('<font', pos)
 
-  if len(found) == 0:
-    exit('font end tag without start tag found at pos ' + str(pe))
-    # The position will likely be wrong since there's already been replacements...
+      if len(found) == 0:
+        exit('font end tag without start tag found at pos ' + str(pe))
+        # The position will likely be wrong since there's already been replacements...
 
-  pos = pe + 1
+      pos = pe + 1
 
-  # Get last non-processed start tag (this way recursive font tags also work)
-  ps = found.pop()
-  # Delete corresponding start/end tags from the string, IF it's equal to tagToStrip
-  # Otherwise skip (and go on finding/processing next start/end tag)
-  if html[ps : ps+len(tagToStrip)] == tagToStrip:
-    html = html[:ps] + html[ps+len(tagToStrip):pe] + html[pe+tagLenEnd:]
-    pos = pos - len(tagToStrip) - tagLenEnd
-  #  print str(ps) + ' ' + str(pe)
-  #else: 
-  #  print 'skipped: ' + str(ps) + ' ' + str(pe)
+      # Get last non-processed start tag (this way recursive font tags also work)
+      ps = found.pop()
+      # Delete corresponding start/end tags from the string, IF it's equal to s_tag_to_strip
+      # Otherwise skip (and go on finding/processing next start/end tag)
+      if html[ps : ps + len(s_tag_to_strip)] == s_tag_to_strip:
+        html = html[:ps] + html[ps + len(s_tag_to_strip) : pe] + html[pe + len_end_tag : ]
+        pos = pos - len(s_tag_to_strip) - len_end_tag
+      #  print str(ps) + ' ' + str(pe)
+      #else:
+      #  print 'skipped: ' + str(ps) + ' ' + str(pe)
 
 #####
 #
@@ -583,7 +593,7 @@ removetagcontainingwhitespace('font')
     # whitespace, there is still no difference in taking it away.
 #    ok = 1
 #    for ee in e.parent.contents:
-#      if ee != e and not(matchstring(ee, rx)):
+#      if ee != e and not(matchstring(ee, rxglobal_spacehmtl_only)):
 #        ok = 0
 #        break
 #    if ok:
@@ -592,13 +602,13 @@ removetagcontainingwhitespace('font')
 #      ee.extract()
 
 # Some 'a' tags have 'b' tags surrounding them, and some have 'b' tags inside them.
-# Normalize this; 
+# Normalize this;
 r = soup.findAll('a')
 for t in r:
   r1 = t.findAll('strong', recursive=False)
   if r1:
     r2 = t.findAll(recursive=False)
-    if len(r1) == len(r2) and len(t.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)) == 0:
+    if len(r1) == len(r2) and len(t.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)) == 0:
       # all tags are 'b' and all navigablestrings are whitespace.
       # Delete the 'b' (can be a chain of multiple, in extreme weird cases)
       for e in r1:
@@ -610,7 +620,7 @@ for t in r:
       e.insert(0, t)
 
 # remove whitespace at end of paragraphs
-r= soup.findAll('p')
+r = soup.findAll('p')
 for t in r:
   extractwhitespacefromend(t)
 
@@ -618,7 +628,7 @@ for t in r:
 # Strictly we only need to move 'HTML whitespace' (&nbsp;), but
 # that may be followed by a separate NavigableString holding only '\n'
 rxb = re.compile('(?:\&nbsp\;|\s)+$')
-r= soup.findAll('br')
+r = soup.findAll('br')
 for t in r:
   e = t.previousSibling
   while e != None and matchstring(e, rxb):
@@ -632,7 +642,7 @@ for t in r:
       e.replaceWith(s)
     e = ee
 # when inside a paragraph, replace (exactly) two consecutive br's by a paragraph ending/start
-r= soup.findAll('br')
+r = soup.findAll('br')
 for t in r:
   # Thanks to previous, newlines before brs have gone so we can just do nextSibling
   t2 = t.nextSibling
@@ -648,7 +658,7 @@ for t in r:
           # if ee is 'markup whitespace', remove it (because it would be at the
           # start of a new paragraph, or lingering around at the end if ee==None)
           e = t2.nextSibling
-          while e != None and matchstring(e, rs):
+          while e != None and matchstring(e, rxglobal_spaces_only):
             # remove this whitespace which would otherwise be at the start of
             e.extract()
             e = t2.nextSibling
@@ -659,8 +669,8 @@ for t in r:
             pe.parent.insert(indexInParent(pe) + 1, t)
           else:
             # If e (the start of the new paragraph) now _starts_ with markup whitespace, remove that.
-            if matchstring(e, rss):
-              s = rss.sub('', str(e))
+            if matchstring(e, rxglobal_spaces_at_start):
+              s = rxglobal_spaces_at_start.sub('', str(e))
               e.replaceWith(s)
             i = indexInParent(pe) + 1
             e = NavigableString('\n')
@@ -670,7 +680,7 @@ for t in r:
             movecontentsinside(pe, e, 0, indexInParent(t2) + 1)
             t2.extract()
             t.extract()
-          
+
 # Delete tables with one TR having one TD - these are useless
 # (take their contents out of the tables)
 r = soup.findAll('table')
@@ -764,27 +774,35 @@ for t in r:
     t.extract()
 
 
-# replace 'font color=' with 'span color=' -- it's more XHTML compliant and no hassle
-# replace 'font' tags with style attributes. First look if there is a single
-# encompassing div/span/p, then look whether font encompasses a single one, otherwise create a 'span' tag in place.
+# Replace 'font color=' with 'span color=' -- it's more XHTML compliant and no hassle
+# Replace 'font' tags with style attributes. First look if there is a single
+# encompassing div/span/p, then look whether font encompasses a single one,
+# otherwise create a 'span' tag in place.
+#
+# ^^ "no hassle" IS NOT ACTUALLY TRUE in the last case! In cases where a font
+# tag surrounds one or several block-level elements, and putting a span there is
+# frowned upon, if not illegal, in that case. However, leaving a 'font' tag
+# might be equally bad... For the moment, we are just hoping that we have
+# cleaned up all font tags that fit this case, above. (Maybe we should clean up
+# some code in the below block instead.)
 r = soup.findAll('font')
 for t in r:
   e = None
   innerdest = False
 
   ee = t.parent
-  s = t.__repr__() 
+  s = t.__repr__()
   if s.startswith('<p>') or s.startswith('<p ') or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
     r1 = ee.findAll(recursive=False)
     if len(r1) == 1: # only font
-      r1 = ee.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)
+      r1 = ee.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
       if len(r1) == 0:
         # parent has only one child tag (the font) and no non-whitespace navstrings
         # so we can dump all our style attributes here
         e = ee
         innerdest = True
   if e is None:
-    r1 = ee.findAll(text=lambda x, r=rx: r.match(x)==None, recursive=False)
+    r1 = ee.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
     if len(r1) == 0:
       r1 = ee.findAll(recursive=False)
       if len(r1) == 1:
@@ -793,7 +811,8 @@ for t in r:
         if s.startswith('<p>') or s.startswith('<p ' )or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
           e = r1[0]
   if e is None:
-    # cannot use a direct parent/child. Make a new span
+    # Cannot use a direct parent/child. Make a new span.
+    # WARNING: see comment on top of this section.
     e = Tag(soup, 'span')
     t.parent.insert(indexInParent(t), e)
 
@@ -866,16 +885,18 @@ for v in ('span', 'div', 'p', 'h2', 'h3', 'h4'):
 ## Only keep the last 'print' statement.
 
 # The 'real contents' are now at the same level as the 'row of menu buttons' on top and
-# bottom, which we don't want. Hence it is not so easy to make an XSLT transform for 
+# bottom, which we don't want. Hence it is not so easy to make an XSLT transform for
 # picking the 'real' body content.
 #
 # Do: Take the first & last tag out - IF these are paragraphs contain navigation buttons
 # (ignore the possibility of NavigableStrings before first/after last tags)
-rx1 = re.compile('^\<p(?:\s|\>)')
+rx_p_start = re.compile('^\<p(?:\s|\>)')
 # button links. Usually there's one to the index page but not always
 # the 'nieuw' is for the p-loog index page which doesn't
-rx2 = re.compile('^\<a href=\"(?:[^\"]*\/)?(?:index|nieuw).htm\"')
-rx3 = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
+rx_buttonlink = re.compile('^\<a href=\"(?:[^\"]*\/)?(?:index|nieuw).htm\"')
+rx_linkimg = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
+
+# The thing we want to inspect (for removal) will be r[i], where i=0 or 1.
 r = soup.body.contents
 if str(r[0]) == '\n':
   # we want the first newline to remain there,
@@ -883,32 +904,36 @@ if str(r[0]) == '\n':
   i = 1
 else:
   i = 0
+
 v = 3
 while v >= 0:
-  # find whitespace _before_ the real content
-  # this will likely be 'markup whitespace' (newlines) that are unnecessary now
-  # Removing 'HTML whitespace' (like breaks/nbsp) has its effect on the actual page -but delete it anyway. I think we want to unify 'space at the start' anyway.
-  if matchstring(r[i], rx):
-    r[i].extract()  ### This actually changes r
-  elif matchstring(r[i], rx1):
+  # Find whitespace _before_ the real content. This will likely be 'markup
+  # whitespace' (newlines) that is unnecessary now.
+  # Removing 'HTML whitespace' (like breaks/nbsp) has its effect on the actual
+  # page; delete it anyway. I think we want to unify 'space at the start'.
+  if matchstring(r[i], rxglobal_spacehmtl_only):
+    r[i].extract()  ### This actually changes r. Then loop.
+  elif matchstring(r[i], rx_p_start):
     if len(r[i].contents) == 0:
-      # extract empty paragraph at start -- that's just as "whitespace" as the above
+      # Extract empty paragraph at start ; that's just as "whitespace" as the above.
       r[i].extract()
     elif v:
       if v == 3 or v == 1:
-        # look for the buttons (only once) - sometimes these are above, sometimes below the title image
+        # Look for the buttons (only once); sometimes these are above,
+        # sometimes below the title image.
         e = r[i].findNext()
-        if matchstring(e, rx2):
+        if matchstring(e, rx_buttonlink):
           r[i].extract()
           v -= 1
-          
-          # if, right after the paragraph with buttons, there's again a paragraph containing links to categories... delete that too.
+
+          # If, right after the paragraph with buttons, there's again a paragraph
+          # containing links to categories... delete that too.
           # OR NOT? ... leave that idea for now...
           continue
       if v == 3 or v == 2:
         # look for a header title image (which is superfluous because the title's also in the page)
         rr = r[i].findAll()
-        if len(rr) == 1 and matchstring(rr[0], rx3):
+        if len(rr) == 1 and matchstring(rr[0], rx_linkimg):
           r[i].extract()
           v -= 2
           continue
@@ -928,16 +953,16 @@ if str(r[-1]) == '\n':
 else:
   i = -1
 while v:
-  if matchstring(r[i], rx):
+  if matchstring(r[i], rxglobal_spacehmtl_only):
     r[i].extract()
     #i = i - 1
-  elif matchstring(r[i], rx1):
+  elif matchstring(r[i], rx_p_start):
     if len(r[i].contents) == 0:
       r[i].extract()
       #i = i - 1
     elif v == 2:
       e = r[i].findNext()
-      if matchstring(e, rx2):
+      if matchstring(e, rx_buttonlink):
         r[i].extract()
         #soup.body.findAll(recursive=False)[-1].extract()
         #i = i - 1
