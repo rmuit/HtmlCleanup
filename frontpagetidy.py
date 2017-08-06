@@ -891,10 +891,30 @@ for v in ('span', 'div', 'p', 'h2', 'h3', 'h4'):
 # Do: Take the first & last tag out - IF these are paragraphs contain navigation buttons
 # (ignore the possibility of NavigableStrings before first/after last tags)
 rx_p_start = re.compile('^\<p(?:\s|\>)')
+# Checks if the array of elements is a list of button links.
+def isbuttonlinks(elements):
+    buttonlink_found = False
+    # (Testing assumption:) all elements on this level must be 'a' tags.
+    for e in elements:
+        if matchstring(e, rxglobal_spacehmtl_only):
+          continue
+        s = e.__repr__()
+        if not s.startswith('<a '):
+          return False
+        href = e.get('href')
+        if not href:
+          return False
+        if href.endswith('index.htm') or  href.endswith('nieuw.htm'):
+          # This is not always the first buttonn (that may be a 'previous' link
+          # with an arbitrary name) but if we encounter this, we assume these
+          # are all button links.
+          buttonlink_found = True
+    return buttonlink_found
+
 # button links. Usually there's one to the index page but not always
 # the 'nieuw' is for the p-loog index page which doesn't
-rx_buttonlink = re.compile('^\<a href=\"(?:[^\"]*\/)?(?:index|nieuw).htm\"')
-rx_linkimg = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
+#rx_buttonlink = re.compile('^\<a href=\"(?:[^\"]*\/)?(?:index|nieuw).htm\"')
+rx_titleimg = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
 
 # The thing we want to inspect (for removal) will be r[i], where i=0 or 1.
 r = soup.body.contents
@@ -921,8 +941,7 @@ while v >= 0:
       if v == 3 or v == 1:
         # Look for the buttons (only once); sometimes these are above,
         # sometimes below the title image.
-        e = r[i].findNext()
-        if matchstring(e, rx_buttonlink):
+        if isbuttonlinks(r[i]):
           r[i].extract()
           v -= 1
 
@@ -933,7 +952,7 @@ while v >= 0:
       if v == 3 or v == 2:
         # look for a header title image (which is superfluous because the title's also in the page)
         rr = r[i].findAll()
-        if len(rr) == 1 and matchstring(rr[0], rx_linkimg):
+        if len(rr) == 1 and matchstring(rr[0], rx_titleimg):
           r[i].extract()
           v -= 2
           continue
@@ -943,15 +962,16 @@ while v >= 0:
   else:
     v = -1 # other tag/NavigableString
 
-# Last
+# Do kind-of the same on the end.
 # NB: this is partly effectively extractwhitespacefromend() - but intermixed with empty <p> tags too
-v = 2
 if str(r[-1]) == '\n':
   # we want the last newline to remain there,
   # so the body tag will be on a line by itself
   i = -2
 else:
   i = -1
+
+v = 3
 while v:
   if matchstring(r[i], rxglobal_spacehmtl_only):
     r[i].extract()
@@ -960,15 +980,24 @@ while v:
     if len(r[i].contents) == 0:
       r[i].extract()
       #i = i - 1
-    elif v == 2:
-      e = r[i].findNext()
-      if matchstring(e, rx_buttonlink):
-        r[i].extract()
-        #soup.body.findAll(recursive=False)[-1].extract()
-        #i = i - 1
-        v = 1
-      else:
-        v = 0 # other nonempty paragraph; quit
+    elif v:
+      if v == 3 or v == 1:
+        # Look for the buttons (only once); sometimes these are above,
+        # sometimes below the title image.
+        if isbuttonlinks(r[i]):
+          r[i].extract()
+          v -= 1
+          # see comment above?
+          continue
+      if v == 3 or v == 2:
+          e = r[i].findNext()
+          if matchstring(e, rx_titleimg):
+            r[i].extract()
+            #soup.body.findAll(recursive=False)[-1].extract()
+            #i = i - 1
+            v = 1
+          continue
+      v = -1 # other nonempty paragraph; quit
     else:
       v = 0 # other nonempty paragraph while v==1
   else:
