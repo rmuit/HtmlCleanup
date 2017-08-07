@@ -1006,4 +1006,6 @@ while v:
 ###TODO: remove unnecessary html entities like &ldquo, or stuff?
 # no, FG might object to "different" quotes?
 
-print soup
+# BeautifulSoup (at least 3.x tested so far) outputs <br />, which is kind-of
+# illegal and certainly unnecessary as HTML.
+print str(soup).replace('<br />','<br>')
