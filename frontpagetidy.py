@@ -32,7 +32,9 @@ fname = args[0]
 ## distinguishing between them, here:
 if os.path.abspath(fname).find('ipce') != -1:
   c_common_font = 'Book Antiqua, Times New Roman, Times'
-  c_img_bullet_re = 'expbul.?.?\.gif$'
+  # We now have several themes; as long as we can encode all bullet GIFs into
+  # one regexp, we'll keep the current code.
+  c_img_bullet_re = '(rom|exp)bul.?.?\.gif$'
 else:
   c_common_font = 'Arial, Helvetica'
   c_img_bullet_re = 'posbul.?.?\.gif$'
@@ -83,7 +85,8 @@ def movecontentsinside(fromwithin, toinside, insertindex=0, fromindex = 0):
     toinside.insert(i, r[fromindex])
     i = i + 1
 
-def matchstring(e, rxglobal_spacehmtl_only):
+# Check if element matches regex; 'safe' replacement for rx.search(str(e))
+def saferegexsearch(e, rx):
   # Difficulty here: str(ee) may give UnicodeEncodeError with some characters
   # and so may ee.__str__() and repr(ee) (the latter with some \x?? chars).
   # The only thing sure to not give errors is ee.__repr__()
@@ -96,7 +99,7 @@ def matchstring(e, rxglobal_spacehmtl_only):
   s = e.__repr__()
   if s.find('\\u') != -1 or s.find('\\x') != -1:
     return False
-  return rxglobal_spacehmtl_only.search(str(e))
+  return rx.search(str(e))
 
 # Remove all tags that only contain whitespace
 # (do not remove the contents. Move the contents outside; remove the tags.)
@@ -105,14 +108,16 @@ def removetagcontainingwhitespace(tagname):
   for e in r:
     ok = 1
     for ee in e.contents:
-      if not(matchstring(ee, rxglobal_spacehmtl_only)):
+      if not(saferegexsearch(ee, rxglobal_spacehmtl_only)):
         ok = 0
         break
     if ok:
       movecontentsbefore(e, e)
       e.extract()
 
-def extractwhitespacefromend(t):
+# Remove whitespace from the end of a tag's contents. (Apparently markup as well
+# as non-markup, which is slightly odd?)
+def removewhitespacefromend(t):
   r = t.contents
   while len(r):
     e = r[-1]
@@ -120,12 +125,12 @@ def extractwhitespacefromend(t):
       if e.__unicode__() == '<br />':
         e.extract()
       else:
-        extractwhitespacefromend(e)
+        removewhitespacefromend(e)
         break
-    elif matchstring(e, rxglobal_spacehmtl_only):
+    elif saferegexsearch(e, rxglobal_spacehmtl_only):
       # Delete whole NavigableString consisting of whitespace.
       e.extract()
-    elif matchstring(e, rxglobal_spacehmtl_at_end) and not rxglobal_newline_at_end.search(str(e)):
+    elif saferegexsearch(e, rxglobal_spacehmtl_at_end) and not saferegexsearch(e, rxglobal_newline_at_end):
       # Extract whitespace from end of NavigableString (except when it's just a
       # newline for markup; we don't want to get everything on one line...)
       s = rxglobal_spacehmtl_at_end.sub('', str(e))
@@ -556,7 +561,7 @@ r = soup.findAll('o:p')
 for t in r:
   r2 = t.contents
   # check for whitespace at start
-  if len(r2) and matchstring(r2[0], rx1):
+  if len(r2) and saferegexsearch(r2[0], rx1):
     s = rx1.sub('', r2[0])
     if s == '':
       r2[0].extract()
@@ -564,7 +569,7 @@ for t in r:
       r2[0].replaceWith(s)
   # check for whitespace at end
   # (r2 may no be empty, after the extract)
-  if len(r2) and matchstring(r2[-1], rx2):
+  if len(r2) and saferegexsearch(r2[-1], rx2):
     s = rx2.sub('', r2[-1])
     if s == '':
       r2[-1].extract()
@@ -593,7 +598,7 @@ removetagcontainingwhitespace('font')
     # whitespace, there is still no difference in taking it away.
 #    ok = 1
 #    for ee in e.parent.contents:
-#      if ee != e and not(matchstring(ee, rxglobal_spacehmtl_only)):
+#      if ee != e and not(saferegexsearch(ee, rxglobal_spacehmtl_only)):
 #        ok = 0
 #        break
 #    if ok:
@@ -622,7 +627,7 @@ for t in r:
 # remove whitespace at end of paragraphs
 r = soup.findAll('p')
 for t in r:
-  extractwhitespacefromend(t)
+  removewhitespacefromend(t)
 
 # remove whitespace just before <br>
 # Strictly we only need to move 'HTML whitespace' (&nbsp;), but
@@ -631,7 +636,7 @@ rxb = re.compile('(?:\&nbsp\;|\s)+$')
 r = soup.findAll('br')
 for t in r:
   e = t.previousSibling
-  while e != None and matchstring(e, rxb):
+  while e != None and saferegexsearch(e, rxb):
     # already store 'previous previous', so we can safely extract it
     # (also works around us not knowing whether extract() will actually get rid of a '\n')
     ee = e.previousSibling
@@ -658,7 +663,7 @@ for t in r:
           # if ee is 'markup whitespace', remove it (because it would be at the
           # start of a new paragraph, or lingering around at the end if ee==None)
           e = t2.nextSibling
-          while e != None and matchstring(e, rxglobal_spaces_only):
+          while e != None and saferegexsearch(e, rxglobal_spaces_only):
             # remove this whitespace which would otherwise be at the start of
             e.extract()
             e = t2.nextSibling
@@ -669,7 +674,7 @@ for t in r:
             pe.parent.insert(indexInParent(pe) + 1, t)
           else:
             # If e (the start of the new paragraph) now _starts_ with markup whitespace, remove that.
-            if matchstring(e, rxglobal_spaces_at_start):
+            if saferegexsearch(e, rxglobal_spaces_at_start):
               s = rxglobal_spaces_at_start.sub('', str(e))
               e.replaceWith(s)
             i = indexInParent(pe) + 1
@@ -726,7 +731,8 @@ for t in r:
           s = r_cont[0].__repr__()
           if s[0:5] == '<img ' and s[-2:] == '/>':
             # When is this a bullet point? Look at 'src' tag. That'll do.
-            # Is a relative path, so look only at the end.
+            # Is a relative path, so it's OK to look only at the end (which is
+            # encoded in the regexp).
             s = r_cont[0]['src']
             if rxb.search(s):
               all_bullets = 1
@@ -767,7 +773,7 @@ for t in r:
           movecontentsinside(r_td[1], ee)
       else:
         movecontentsinside(r_td[1], ee)
-      extractwhitespacefromend(ee)
+      removewhitespacefromend(ee)
       ee = NavigableString('\n')
       e.insert(i + 1, ee)
       i = i + 2
@@ -896,7 +902,7 @@ def isbuttonlinks(elements):
     buttonlink_found = False
     # (Testing assumption:) all elements on this level must be 'a' tags.
     for e in elements:
-        if matchstring(e, rxglobal_spacehmtl_only):
+        if saferegexsearch(e, rxglobal_spacehmtl_only):
           continue
         s = e.__repr__()
         if not s.startswith('<a '):
@@ -916,6 +922,7 @@ def isbuttonlinks(elements):
 #rx_buttonlink = re.compile('^\<a href=\"(?:[^\"]*\/)?(?:index|nieuw).htm\"')
 rx_titleimg = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
 
+# Remove button links from the page top.
 # The thing we want to inspect (for removal) will be r[i], where i=0 or 1.
 r = soup.body.contents
 if str(r[0]) == '\n':
@@ -931,9 +938,9 @@ while v >= 0:
   # whitespace' (newlines) that is unnecessary now.
   # Removing 'HTML whitespace' (like breaks/nbsp) has its effect on the actual
   # page; delete it anyway. I think we want to unify 'space at the start'.
-  if matchstring(r[i], rxglobal_spacehmtl_only):
+  if saferegexsearch(r[i], rxglobal_spacehmtl_only):
     r[i].extract()  ### This actually changes r. Then loop.
-  elif matchstring(r[i], rx_p_start):
+  elif saferegexsearch(r[i], rx_p_start):
     if len(r[i].contents) == 0:
       # Extract empty paragraph at start ; that's just as "whitespace" as the above.
       r[i].extract()
@@ -952,7 +959,7 @@ while v >= 0:
       if v == 3 or v == 2:
         # look for a header title image (which is superfluous because the title's also in the page)
         rr = r[i].findAll()
-        if len(rr) == 1 and matchstring(rr[0], rx_titleimg):
+        if len(rr) == 1 and saferegexsearch(rr[0], rx_titleimg):
           r[i].extract()
           v -= 2
           continue
@@ -962,8 +969,8 @@ while v >= 0:
   else:
     v = -1 # other tag/NavigableString
 
-# Do kind-of the same on the end.
-# NB: this is partly effectively extractwhitespacefromend() - but intermixed with empty <p> tags too
+# Remove button links from the page bottom. Kind-of the same code but not fully.
+# NB: this is partly effectively removewhitespacefromend() - but intermixed with empty <p> tags too
 if str(r[-1]) == '\n':
   # we want the last newline to remain there,
   # so the body tag will be on a line by itself
@@ -973,10 +980,10 @@ else:
 
 v = 3
 while v:
-  if matchstring(r[i], rxglobal_spacehmtl_only):
+  if saferegexsearch(r[i], rxglobal_spacehmtl_only):
     r[i].extract()
     #i = i - 1
-  elif matchstring(r[i], rx_p_start):
+  elif saferegexsearch(r[i], rx_p_start):
     if len(r[i].contents) == 0:
       r[i].extract()
       #i = i - 1
@@ -991,7 +998,7 @@ while v:
           continue
       if v == 3 or v == 2:
           e = r[i].findNext()
-          if matchstring(e, rx_titleimg):
+          if saferegexsearch(e, rx_titleimg):
             r[i].extract()
             #soup.body.findAll(recursive=False)[-1].extract()
             #i = i - 1
