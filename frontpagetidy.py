@@ -41,44 +41,58 @@ else:
 
 ### THESE REGEXES ARE REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
 #
+# Regexes containing HTML tags. These can be used on all elements but they will
+# match _either_ a 'br' _or_ a combination of anything else - because <br>s are
+# Tags and are never found inside a NavigableString.
 rxglobal_spacehmtl_only = re.compile('^(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
-rxglobal_newline_at_end = re.compile('\S\n$')
 rxglobal_spacehmtl_at_end = re.compile('(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
+#
+# Regexes usable on NavigableStrings.
+# We want to use thse for replacement (specifically by ''). Space excluding
+# "&nbsp;" at the start/end of the contents of a tag don't usually influence
+# formatting of the output _except_ if they are compound breaking/non-breaking
+# spaces. But even if they influence only formatting of the source HTML, we
+# explicitly want to 'fix' that for spaces at start/end of tag contents.
+#
+# Document: does \s include newlines (very probably no), and is that wanted? It
+# seems like for 'spaces_only', we want to include newlines too (because this is
+# typically used for matching/removing full contents of a tag) but we may not
+# want to include them at start/end (because if they are in the document, that's
+# probably on purpose because it provides nice formatting that we can preserve)?
 rxglobal_spaces_only = re.compile('^\s+$')
 rxglobal_spaces_at_start = re.compile('^\s+')
-#NB: the \n and ' ' are probably not necessary here because they do not affect the
-# rendering of the document (and taking the '\n' away as we are doing now may
-# be worse for readability of the source?) ...
-# ...but I'll leave it in anyway, until I'm sure. Things work now, anyway.
-#NB2: above is not really correct. They should be in the regexp
-# because strings can be compound, like '\r\n        &nbsp;&nbsp;'
-#NB3: this regex can be used on all elements - but it will match _either_ a 'br'
-# _or_ a combination of anything else - because 'br's are Tags, not in a NavigableString
+rxglobal_spaces_at_end = re.compile('\s+$')
+rxglobal_nbspace_at_end = re.compile('(?:\s|\&nbsp\;)+$')
+rxglobal_newline = re.compile('\s*\n+\s*')
+# This one is only usable for matching, not replacement:
+rxglobal_newline_at_end = re.compile('\S\n$')
 
 
 ###
 ### Functions 1/3: helper functions which are pretty much general
 ###
 
-# return index of element inside parent contents
+# Return the index of an element inside parent contents.
 def indexInParent(slf):
   # (Maybe there is a better way than this; I used to have this in a patched
   # version of the BeautifulSoup.py library 3.1.0.1 itself, before I started
   # working with the non-buggy v3.0.8.1. So I just took the function out
-  # and didn't look further)
+  # and didn't look further.)
   index = 0
   while index < len(slf.parent.contents):
     if slf.parent.contents[index] is slf:
       return index
     index = index + 1
-  # if this happens, something is really wrong with the data structure:
+  # If this happens, something is really wrong with the data structure:
   return None
 
-# move all contents out of one tag, to just before the other tag
+# Move all contents out of one tag, to just before another tag.
 def movecontentsbefore(fromwithin, tobefore):
   movecontentsinside(fromwithin, tobefore.parent, indexInParent(tobefore))
 
-def movecontentsinside(fromwithin, toinside, insertindex=0, fromindex = 0):
+# Move all or some (last part of) contents out of one tag, to inside another tag
+# (at a specified index; default at the start).
+def movecontentsinside(fromwithin, toinside, insertindex = 0, fromindex = 0):
   r = fromwithin.contents
   i = insertindex
   while len(r) > fromindex:
@@ -86,6 +100,8 @@ def movecontentsinside(fromwithin, toinside, insertindex=0, fromindex = 0):
     i = i + 1
 
 # Check if element matches regex; 'safe' replacement for rx.search(str(e))
+# where no error will be thrown when e is a tag (as opposed to NavigableString)
+# either.
 def saferegexsearch(e, rx):
   # Difficulty here: str(ee) may give UnicodeEncodeError with some characters
   # and so may ee.__str__() and repr(ee) (the latter with some \x?? chars).
@@ -101,8 +117,8 @@ def saferegexsearch(e, rx):
     return False
   return rx.search(str(e))
 
-# Remove all tags that only contain whitespace
-# (do not remove the contents. Move the contents outside; remove the tags.)
+# Remove all tags that only contain whitespace.
+# (Do not remove the contents. Move the contents outside; remove the tags.)
 def removetagcontainingwhitespace(tagname):
   r = soup.findAll(tagname)
   for e in r:
@@ -115,8 +131,34 @@ def removetagcontainingwhitespace(tagname):
       movecontentsbefore(e, e)
       e.extract()
 
-# Remove whitespace from the end of a tag's contents. (Apparently markup as well
-# as non-markup, which is slightly odd?)
+# Remove whitespace from start / end of a tag's contents.
+def removewhitespace(t):
+    # First do end; this includes removing full-whitespace string and also <br>s.
+    # (We already have that function and don't want to look at whether it makes
+    # sense to refactor it, right now.)
+    removewhitespacefromend(t)
+    # Then do start. Keep \n at the start if it's there though; that's
+    # formatting we want to keep.
+    r = t.contents
+    if len(r):
+        if str(r[0]) == '\n':
+          i = 1
+        else:
+          i = 0
+        # We know we have no full-whitespace (because that would have been
+        # removed) so we know we will strip only part of the element. If this
+        # element is a tag then we don't want to strip anything inside it
+        # (because that is not necessarily 'only markup').
+        e = r[i]
+        if saferegexsearch(e, rxglobal_spaces_at_start):
+          s = rxglobal_spaces_at_start.sub('', r[i])
+          r[i].replaceWith(s)
+
+# Remove whitespace from the end of a tag's contents.
+#
+# The definition of the regex we use makes this include non-breaking space. The
+# code below apparently makes this include 'HTML' newlines (i.e. <br>s) as well
+# as 'markup') newlines... which is slightly odd?
 def removewhitespacefromend(t):
   r = t.contents
   while len(r):
@@ -267,14 +309,14 @@ def checkalign(pe, parentalign, pallowchange = ''):
       t.extract()
 
   al = {}
-  # non-whitespace NavigableStrings always have alignment equal to the parent element
-  # (whitespace strings don't matter; alignment can be changed without visible difference)
+  # Non-whitespace NavigableStrings always have alignment equal to the parent element.
+  # (Whitespace strings don't matter; alignment can be changed without visible difference.)
   r = pe.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
   if len(r):
+    # Setting 'inherit' effectively means: prevent parent's alignment from being changed.
     al['inherit'] = True
-    # setting 'inherit' effectively means: prevent parent's alignment from being changed
 
-  ## find/index alignment of all tags within pe, and process
+  ## Find/index alignment of all tags within pe, and process them.
   r = pe.findAll(recursive=False)
   for t in r:
 
@@ -293,9 +335,9 @@ def checkalign(pe, parentalign, pallowchange = ''):
       else:
         allowchange = ''
 
-    # recurse through subelements first
+    # Recurse through subelements first.
     tal = checkalign(t, thisalign, allowchange)
-    # handling of 'implicitly aligning tags', i.e. <center>:
+    # Handling of 'implicitly aligning tags', i.e. <center>:
     if s.startswith('<center>'):
       if 'CHANGE' in tal:
         # align needs change -- which can (only) be done by deleting the tag.
@@ -303,26 +345,26 @@ def checkalign(pe, parentalign, pallowchange = ''):
         t.extract()
 
     else:
-      # 'normal' element
+      # 'Normal' element.
       if 'CHANGE' in tal:
-        # align needs change
-        # (we may end up deleting it just afterwards, but this way keeps code clean)
+        # align needs change. (We may end up deleting it just afterwards, but
+        # this way keeps code clean)
         setalign(t, tal['CHANGE'])
         talign = tal['CHANGE']
 
       if talign:
-        ## explicit/changed alignment
+        ## Explicit/changed alignment.
         if talign == parentalign:
-          # delete (now-)superfluous explicit 'align' attribute in tag
+          # Delete (now-)superfluous explicit 'align' attribute in tag.
           setalign(t, '')
           al['inherit'] = True
         else:
           # We're just collecting alignments 'not equal to inherited' here;
-          # Check after the loop what we want to do about it.
+          # check after the loop what we want to do about it.
           lastalign = talign
           al[lastalign] = True
       else:
-        ## inherited, unchanged alignment
+        ## Inherited, unchanged alignment.
         al['inherit'] = True
 
   ## After finding/indexing(/changing?) all 'align' from (recursive?) child tags:
@@ -332,7 +374,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
   # no "inherit" was recorded.
   if len(al) == 1 and ('inherit' not in al) and (pallowchange == 'any' or pallowchange == lastalign):
     # All alignments are the same == lastalign.
-    # Indicate to caller that it should change parent's align attribute
+    # Indicate to caller that it should change parent's align attribute.
     al['CHANGE'] = lastalign
     # Delete any explicit attribute because we will change the parent's.
     for t in pe.findAll(align=lastalign, recursive=False):
@@ -344,7 +386,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
 # - replace 'middle' by 'center'? (align=middle is used for pictures, I've seen sometimes.)
 
 
-# Filter out attributes from a tag; change some others
+# Filter out attributes from a tag; change some others.
 #
 # tagname is really a duplicate argument that could be derived from t
 # but stupidly, there's no nice argument for that?
@@ -555,32 +597,16 @@ for t in r:
 
 # Remove stupid MSFT 'o:p' tags. Apparently it is best for the document flow,
 # if we get rid of some markup whitespace (not &nbsp) inside these tags too...
-rx1 = re.compile('^\s+')
-rx2 = re.compile('\s+$')
 r = soup.findAll('o:p')
 for t in r:
+  removewhitespace(t)
   r2 = t.contents
-  # check for whitespace at start
-  if len(r2) and saferegexsearch(r2[0], rx1):
-    s = rx1.sub('', r2[0])
-    if s == '':
-      r2[0].extract()
-    else:
-      r2[0].replaceWith(s)
-  # check for whitespace at end
-  # (r2 may no be empty, after the extract)
-  if len(r2) and saferegexsearch(r2[-1], rx2):
-    s = rx2.sub('', r2[-1])
-    if s == '':
-      r2[-1].extract()
-    else:
-      r2[-1].replaceWith(s)
   if len(r2):
     movecontentsbefore(t, t)
   t.extract()
 
-# Remove tags that only contain whitespace
-# (do not remove the contents. Move the contents outside; remove the tags.)
+# Remove non-block tags that only contain whitespace.
+# (Do not remove the contents. Move the contents outside; remove the tags.)
 removetagcontainingwhitespace('strong')
 removetagcontainingwhitespace('em')
 removetagcontainingwhitespace('font')
@@ -803,8 +829,8 @@ for t in r:
     if len(r1) == 1: # only font
       r1 = ee.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
       if len(r1) == 0:
-        # parent has only one child tag (the font) and no non-whitespace navstrings
-        # so we can dump all our style attributes here
+        # Parent has only one child tag (the font) and no non-whitespace
+        # navstrings so we can dump all our style attributes here.
         e = ee
         innerdest = True
   if e is None:
@@ -812,7 +838,7 @@ for t in r:
     if len(r1) == 0:
       r1 = ee.findAll(recursive=False)
       if len(r1) == 1:
-        # only one child tag and no non-ws tag
+        # Only one child tag and no non-ws tag.
         s = r1[0].__repr__()
         if s.startswith('<p>') or s.startswith('<p ' )or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
           e = r1[0]
@@ -822,18 +848,18 @@ for t in r:
     e = Tag(soup, 'span')
     t.parent.insert(indexInParent(t), e)
 
-  # get the styles which we're going to add to -- as a dict
+  # Get the styles which we're going to add to -- as a dict.
   estyle = getstyle(e)
-  #t.attrs is list of tuples
-  # so if you loop through it, you get tuples back
-  # still you can USE it as a dict type. So you can assign and delete stuff by key
-  # however you may not delete stuff by key while iterating of the list of attrs! That makes the iterator break off...
+  # t.attrs is list of tuples, so if you loop through it, you get tuples back.
+  # Still, you can USE it as a dict type. So you can assign and delete stuff by
+  # key; however, you may not delete stuff by key while iterating of the list of
+  # attrs! That makes the iterator break off...
 
-  # create list of keys first
+  # Create list of keys first.
   attrs = []
   for attr in t.attrs:
     attrs.append(attr[0])
-  # iterate over attributes (note: you get them as a list of tuples)
+  # Iterate over attributes. (Note: you get them as a list of tuples).
   for can in attrs:
     an = can.lower()
     av = t.get(can)
@@ -847,12 +873,13 @@ for t in r:
       sn = 'font-size'
 
     if sn:
-      # ignore the property if you want to assign to a span/div/p inside the font tag, and that already has the same property
+      # ignore the property if you want to assign to a span/div/p inside the
+      # font tag, and that already has the same property.
       if not (innerdest and sn in s):
         estyle[sn] = av
       del t[an]
 
-  # put the style into e
+  # Put the style into e
   s = ''
   for sn in estyle:
     if s != '':
@@ -871,9 +898,11 @@ for t in r:
 checkalign(soup.body, 'left')
 
 
-# Look through tags, change some attributes if necessary,
-# AND delete div/span tags without attributes. (There may be those, left by checkalign())
-# (This should be after the font-elimination code since that may have put font sizes & colors in a tag, which we will delete here)
+# Look through tags, change some attributes if necessary, AND remove div/span
+# tags without attributes. (There may be <div>s left by checkalign(); often
+# there are also unnecessary <span>s inside <p>s.)
+# (This should be after the font-elimination code since that may have put font
+# sizes & colors in a tag, which we will delete here.)
 #
 # (h2 / h4 tags with cleanable attributes found in p-loog.info)
 for v in ('span', 'div', 'p', 'h2', 'h3', 'h4'):
@@ -926,8 +955,8 @@ rx_titleimg = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
 # The thing we want to inspect (for removal) will be r[i], where i=0 or 1.
 r = soup.body.contents
 if str(r[0]) == '\n':
-  # we want the first newline to remain there,
-  # so the body tag will be on a line by itself
+  # We want the first newline to remain there, so the body tag will be on a line
+  # by itself.
   i = 1
 else:
   i = 0
