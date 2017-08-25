@@ -764,10 +764,10 @@ for t in r:
 #
 # ^^ "no hassle" IS NOT ACTUALLY TRUE in the last case! In cases where a font
 # tag surrounds one or several block-level elements, and putting a span there is
-# frowned upon, if not illegal, in that case. However, leaving a 'font' tag
-# might be equally bad... For the moment, we are just hoping that we have
-# cleaned up all font tags that fit this case, above. (Maybe we should clean up
-# some code in the below block instead.)
+# frowned upon, if not illegal. However, leaving a 'font' tag might be equally
+# bad... For the moment, we are just hoping that we have cleaned up all font
+# tags that fit this case, above. (Maybe we should clean up some code in the
+# below block instead.)
 r = soup.findAll('font')
 for t in r:
   e = None
@@ -799,7 +799,7 @@ for t in r:
     e = Tag(soup, 'span')
     t.parent.insert(indexInParent(t), e)
 
-  # Get the styles which we're going to add to -- as a dict.
+  # Get the styles which we're going to add to e -- as a dict.
   estyle = getstyle(e)
   # t.attrs is list of tuples, so if you loop through it, you get tuples back.
   # Still, you can USE it as a dict type. So you can assign and delete stuff by
@@ -824,11 +824,13 @@ for t in r:
       sn = 'font-size'
 
     if sn:
-      # ignore the property if you want to assign to a span/div/p inside the
-      # font tag, and that already has the same property.
-      if not (innerdest and sn in s):
-        estyle[sn] = av
       del t[an]
+      # Ignore the common font-family
+      if sn != 'font-family' or av != c_common_font:
+        # Ignore the property if you want to assign to a span/div/p inside the
+        # font tag, and that already has the same property.
+        if not (innerdest and sn in s):
+          estyle[sn] = av
 
   # Put the style into e
   s = ''
