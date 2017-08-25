@@ -120,8 +120,7 @@ def saferegexsearch(e, rx):
 # Remove all tags that only contain whitespace.
 # (Do not remove the contents. Move the contents outside; remove the tags.)
 def removetagcontainingwhitespace(tagname):
-  r = soup.findAll(tagname)
-  for e in r:
+  for e in soup.findAll(tagname):
     ok = 1
     for ee in e.contents:
       if not(saferegexsearch(ee, rxglobal_spacehmtl_only)):
@@ -179,6 +178,18 @@ def removewhitespacefromend(t):
       e.replaceWith(s)
     else:
       break
+
+# Remove newlines + superfluous markup spacing from tags.
+#
+# This should be called for tags that we don't expect to containg any formatting
+# of the HTML document which we want to preserve; all content will be collapsed.
+def removenewlinesfromcontent(t):
+  for e in t.contents:
+    if e.__class__.__name__ == 'Tag':
+      removenewlinesfromcontent(e)
+    elif saferegexsearch(e, rxglobal_newline):
+      s = rxglobal_newline.sub(' ', str(e))
+      e.replaceWith(s)
 
 # Get style attribute from tag, return it as dictionary
 def getstyle(t):
@@ -303,8 +314,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
     # get rid of all 'center' tags, because they do nothing.
     # (you're generally better off placing its child contents at the same level now,
     # so you can inspect them in one go)
-    r = pe.findAll('center', recursive=False)
-    for t in r:
+    for t in pe.findAll('center', recursive=False):
       movecontentsbefore(t, t)
       t.extract()
 
@@ -317,8 +327,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
     al['inherit'] = True
 
   ## Find/index alignment of all tags within pe, and process them.
-  r = pe.findAll(recursive=False)
-  for t in r:
+  for t in pe.findAll(recursive=False):
 
     s = t.__repr__()
     talign = getalign(t)
@@ -582,14 +591,12 @@ r = soup.findAll(text=lambda text:isinstance(text, Comment))
 
 #Replace b->strong and i->em, for XHTML compliance
 # and so that we're sure we are not skipping tags in the code below
-r = soup.findAll('b')
-for t in r:
+for t in soup.findAll('b'):
   e = Tag(soup, 'strong')
   t.parent.insert(indexInParent(t), e)
   movecontentsinside(t, e)
   t.extract()
-r = soup.findAll('i')
-for t in r:
+for t in soup.findAll('i'):
   e = Tag(soup, 'em')
   t.parent.insert(indexInParent(t), e)
   movecontentsinside(t, e)
@@ -597,8 +604,7 @@ for t in r:
 
 # Remove stupid MSFT 'o:p' tags. Apparently it is best for the document flow,
 # if we get rid of some markup whitespace (not &nbsp) inside these tags too...
-r = soup.findAll('o:p')
-for t in r:
+for t in soup.findAll('o:p'):
   removewhitespace(t)
   r2 = t.contents
   if len(r2):
@@ -649,68 +655,6 @@ for t in r:
       e = Tag(soup, 'strong')
       t.parent.insert(indexInParent(t), e)
       e.insert(0, t)
-
-# remove whitespace at end of paragraphs
-r = soup.findAll('p')
-for t in r:
-  removewhitespacefromend(t)
-
-# remove whitespace just before <br>
-# Strictly we only need to move 'HTML whitespace' (&nbsp;), but
-# that may be followed by a separate NavigableString holding only '\n'
-rxb = re.compile('(?:\&nbsp\;|\s)+$')
-r = soup.findAll('br')
-for t in r:
-  e = t.previousSibling
-  while e != None and saferegexsearch(e, rxb):
-    # already store 'previous previous', so we can safely extract it
-    # (also works around us not knowing whether extract() will actually get rid of a '\n')
-    ee = e.previousSibling
-    s = rxb.sub('', e)
-    if s == '':
-      e.extract()
-    else:
-      e.replaceWith(s)
-    e = ee
-# when inside a paragraph, replace (exactly) two consecutive br's by a paragraph ending/start
-r = soup.findAll('br')
-for t in r:
-  # Thanks to previous, newlines before brs have gone so we can just do nextSibling
-  t2 = t.nextSibling
-  if t2.__repr__() == '<br />':
-    e = t.previousSibling
-    if e.__repr__() != '<br />':
-      e = t2.nextSibling
-      if e.__repr__() != '<br />':
-        pe = t.parent
-        s = pe.__repr__()
-        if s.startswith('<p>') or s.startswith('<p '):
-          # Move contents after ee to a new paragraph
-          # if ee is 'markup whitespace', remove it (because it would be at the
-          # start of a new paragraph, or lingering around at the end if ee==None)
-          e = t2.nextSibling
-          while e != None and saferegexsearch(e, rxglobal_spaces_only):
-            # remove this whitespace which would otherwise be at the start of
-            e.extract()
-            e = t2.nextSibling
-          if e == None:
-            # The two br's were at the end of a paragraph. Weirdness.
-            # Move them outside (just after) the paragraph.
-            pe.parent.insert(indexInParent(pe) + 1, t2)
-            pe.parent.insert(indexInParent(pe) + 1, t)
-          else:
-            # If e (the start of the new paragraph) now _starts_ with markup whitespace, remove that.
-            if saferegexsearch(e, rxglobal_spaces_at_start):
-              s = rxglobal_spaces_at_start.sub('', str(e))
-              e.replaceWith(s)
-            i = indexInParent(pe) + 1
-            e = NavigableString('\n')
-            pe.parent.insert(i,e)
-            e = Tag(soup, 'p')
-            pe.parent.insert(i + 1, e)
-            movecontentsinside(pe, e, 0, indexInParent(t2) + 1)
-            t2.extract()
-            t.extract()
 
 # Delete tables with one TR having one TD - these are useless
 # (take their contents out of the tables)
@@ -905,13 +849,83 @@ checkalign(soup.body, 'left')
 # sizes & colors in a tag, which we will delete here.)
 #
 # (h2 / h4 tags with cleanable attributes found in p-loog.info)
-for v in ('span', 'div', 'p', 'h2', 'h3', 'h4'):
-  for t in soup.findAll(v):
+for tagname in ('span', 'div', 'p', 'h2', 'h3', 'h4'):
+  for t in soup.findAll(tagname):
     # pass v as second argument. I know that's duplicate but t has no easy property to derive v from?
-    mangleattributes(t, v)
-    if len(t.attrs) == 0 and (v == 'span' or v == 'div'):
+    mangleattributes(t, tagname)
+    if len(t.attrs) == 0 and (tagname == 'span' or tagname == 'div'):
       movecontentsbefore(t, t)
       t.extract()
+
+# Remove whitespace just before <br>.
+# Strictly we only need to move 'HTML whitespace' (&nbsp;), but that may be
+# followed by a separate NavigableString holding only '\n'.
+for t in soup.findAll('br'):
+  e = t.previousSibling
+  while e != None and saferegexsearch(e, rxglobal_nbspace_at_end):
+    # already store 'previous previous', so we can safely extract it
+    # (also works around us not knowing whether extract() will actually get rid of a '\n')
+    ee = e.previousSibling
+    s = rxglobal_nbspace_at_end.sub('', e)
+    if s == '':
+      e.extract()
+    else:
+      e.replaceWith(s)
+    e = ee
+
+# When inside a paragraph, replace (exactly) two consecutive <br>s by a
+# paragraph ending + start.
+for t in soup.findAll('br'):
+  # Thanks to previous, newlines before brs have gone so we can just do nextSibling.
+  t2 = t.nextSibling
+  if t2.__repr__() == '<br />':
+    e = t.previousSibling
+    if e.__repr__() != '<br />':
+      e = t2.nextSibling
+      if e.__repr__() != '<br />':
+        pe = t.parent
+        s = pe.__repr__()
+        if s.startswith('<p>') or s.startswith('<p '):
+          # We have exactly two <br>s, inside a <p>.
+          # Move contents after t2 to a new paragraph.
+          e = t2.nextSibling
+          if e == None:
+            # The two br's were at the end of a paragraph. Weirdness.
+            # Move them outside (just after) the paragraph.
+            pe.parent.insert(indexInParent(pe) + 1, t2)
+            pe.parent.insert(indexInParent(pe) + 1, t)
+          else:
+            i = indexInParent(pe) + 1
+            e = NavigableString('\n')
+            pe.parent.insert(i,e)
+            e = Tag(soup, 'p')
+            pe.parent.insert(i + 1, e)
+            movecontentsinside(pe, e, 0, indexInParent(t2) + 1)
+            t2.extract()
+            t.extract()
+# If the end of the existing / start of the new paragraph) is now markup
+# whitespace, that will be removed below.
+
+
+# The following needs to be done _after_ removing <span>s inside <p>s:
+
+for tagname in ('span', 'p', 'h2', 'h3', 'h4', 'li'):
+  for t in soup.findAll(tagname):
+    # Remove newlines in the tags which are supposed to have 'simple' contents.
+    # (We've seen paragraphs containing contents which are indented and
+    # double-spaced, which means someone has been writing it like that in
+    # Frontpage but we really don't need that. We've also seen e.g. h2 tags with
+    # two newlines in the middle of the title.)
+    removenewlinesfromcontent(t)
+    # Remove whitespace at start/end of 'position' tags too, to achieve better
+    # markup. Don't do 'purely inline' tags (like <span> usually is) because
+    # that may affect rendering if there is no space just outside of the tag.
+    # (We've seen this is necessary in p and li; we just do the rest too because
+    # why not. WARNING: This removes <br> fron the end too which may not always
+    # be a great idea, but we won't rewrite that part until we see trouble with
+    # it.)
+    if tagname != 'em':
+      removewhitespace(t)
 
 #####
 #####
