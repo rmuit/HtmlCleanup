@@ -22,11 +22,18 @@ if len(args) != 1:
 
 fname = args[0]
 
-### 'constants' for constructs we need to use in site specific code:
+### 'constants' for constructs we need to use in site specific code, or
+### functionality that feels best to be able to turn on/off:
 #
-#  - the font name (used in all illegal font tags which should be stripped out
-#    before even feeding the HTML to BeautifulSoup
-#  - name of the image which should be converted to 'li' tag when found
+# - remove empty paragraphs after <ul>. (It _seems_ this is something you would
+#   always want to arrange in styling... but removing them may change vertical
+#   spacing / make things inconsistent, it if there are <ul>s with and without
+#   empty paragraphs below them.
+c_remove_empty_paragraphs_under_blocks = True
+
+# - the font name (used in all illegal font tags which should be stripped out
+#   before even feeding the HTML to BeautifulSoup
+# - name of the image which should be converted to 'li' tag when found
 #
 ## if you use this script for different sites, insert favourite way of
 ## distinguishing between them, here:
@@ -926,6 +933,20 @@ for tagname in ('span', 'p', 'h2', 'h3', 'h4', 'li'):
     # it.)
     if tagname != 'em':
       removewhitespace(t)
+
+# Remove empty paragraphs after 'block elements'
+if c_remove_empty_paragraphs_under_blocks:
+  for tagname in ('table', 'ul'):
+    for t in soup.findAll(tagname):
+      e2 = t.nextSibling
+      while str(e2) == '\n':
+        e2 = e2.nextSibling
+      if e2.__class__.__name__ == 'Tag' and len(e2.contents) == 0:
+        # There really is no better way of findinig out whether e2 is a <p>?
+        s = e2.__repr__()
+        if s.startswith('<p>') or s.startswith('<p '):
+          e2.extract()
+
 
 #####
 #####
