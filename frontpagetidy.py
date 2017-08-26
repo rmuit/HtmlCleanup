@@ -80,7 +80,7 @@ rxglobal_newline_at_end = re.compile('\S\n$')
 ###
 
 # Return the index of an element inside parent contents.
-def indexInParent(slf):
+def getindexinparent(slf):
   # (Maybe there is a better way than this; I used to have this in a patched
   # version of the BeautifulSoup.py library 3.1.0.1 itself, before I started
   # working with the non-buggy v3.0.8.1. So I just took the function out
@@ -93,9 +93,20 @@ def indexInParent(slf):
   # If this happens, something is really wrong with the data structure:
   return None
 
+# Return the tag name of an element (or '' if this is not a tag).
+#
+# I was surprised I can't find a function like this in BS...
+def gettagname(element):
+  if element.__class__.__name__ != 'Tag':
+    return ''
+  m = saferegexsearch(element.__repr__(), re.compile('^\<([^\ >]+)'))
+  if m:
+    return m.group(1)
+  return ''
+
 # Move all contents out of one tag, to just before another tag.
 def movecontentsbefore(fromwithin, tobefore):
-  movecontentsinside(fromwithin, tobefore.parent, indexInParent(tobefore))
+  movecontentsinside(fromwithin, tobefore.parent, getindexinparent(tobefore))
 
 # Move all or some (last part of) contents out of one tag, to inside another tag
 # (at a specified index; default at the start).
@@ -109,7 +120,7 @@ def movecontentsinside(fromwithin, toinside, insertindex = 0, fromindex = 0):
 # Check if element matches regex; 'safe' replacement for rx.search(str(e))
 # where no error will be thrown when e is a tag (as opposed to NavigableString)
 # either.
-def saferegexsearch(e, rx):
+def saferegexsearch(element, rx):
   # Difficulty here: str(ee) may give UnicodeEncodeError with some characters
   # and so may ee.__str__() and repr(ee) (the latter with some \x?? chars).
   # The only thing sure to not give errors is ee.__repr__()
@@ -119,10 +130,10 @@ def saferegexsearch(e, rx):
   # Yeah, I know, it's probably just my limited Python knowledge, that made me
   # write this function...
   # (If it isn't a bug in BeautifulSoup 3.1; probably not.)
-  s = e.__repr__()
+  s = element.__repr__()
   if s.find('\\u') != -1 or s.find('\\x') != -1:
     return False
-  return rx.search(str(e))
+  return rx.search(str(element))
 
 # Remove all tags that only contain whitespace.
 # (Do not remove the contents. Move the contents outside; remove the tags.)
@@ -139,26 +150,26 @@ def removetagcontainingwhitespace(tagname):
 
 # Remove whitespace from start / end of a tag's contents.
 def removewhitespace(t):
-    # First do end; this includes removing full-whitespace string and also <br>s.
-    # (We already have that function and don't want to look at whether it makes
-    # sense to refactor it, right now.)
-    removewhitespacefromend(t)
-    # Then do start. Keep \n at the start if it's there though; that's
-    # formatting we want to keep.
-    r = t.contents
-    if len(r):
-        if str(r[0]) == '\n':
-          i = 1
-        else:
-          i = 0
-        # We know we have no full-whitespace (because that would have been
-        # removed) so we know we will strip only part of the element. If this
-        # element is a tag then we don't want to strip anything inside it
-        # (because that is not necessarily 'only markup').
-        e = r[i]
-        if saferegexsearch(e, rxglobal_spaces_at_start):
-          s = rxglobal_spaces_at_start.sub('', r[i])
-          r[i].replaceWith(s)
+  # First do end; this includes removing full-whitespace string and also <br>s.
+  # (We already have that function and don't want to look at whether it makes
+  # sense to refactor it, right now.)
+  removewhitespacefromend(t)
+  # Then do start. Keep \n at the start if it's there though; that's
+  # formatting we want to keep.
+  r = t.contents
+  if len(r):
+    if str(r[0]) == '\n':
+      i = 1
+    else:
+      i = 0
+    # We know we have no full-whitespace (because that would have been
+    # removed) so we know we will strip only part of the element. If this
+    # element is a tag then we don't want to strip anything inside it
+    # (because that is not necessarily 'only markup').
+    e = r[i]
+    if saferegexsearch(e, rxglobal_spaces_at_start):
+      s = rxglobal_spaces_at_start.sub('', r[i])
+      r[i].replaceWith(s)
 
 # Remove whitespace from the end of a tag's contents.
 #
@@ -283,8 +294,7 @@ def setalign(t, value):
   # special handling for images, since the (deprecated?)
   # 'align' tag governs their own alignment - not their contents'
   # alignment. So don't do 'text-align' there.
-  s = t.__repr__()
-  if not s.startswith('<img '):
+  if gettagname(t) != 'img':
     setstyle(t, 'text-align', value)
   elif value != '':
     t['align'] = value
@@ -336,17 +346,17 @@ def checkalign(pe, parentalign, pallowchange = ''):
   ## Find/index alignment of all tags within pe, and process them.
   for t in pe.findAll(recursive=False):
 
-    s = t.__repr__()
+    tagname = gettagname(t)
     talign = getalign(t)
     if talign:
       thisalign = talign
       allowchange = 'any'
-    elif s.startswith('<center>'):
+    elif tagname == 'center':
       thisalign = 'center'
       allowchange = parentalign
     else:
       thisalign = parentalign
-      if s.startswith('<p>') or s.startswith('<p '):
+      if tagname == 'p':
         allowchange = 'any'
       else:
         allowchange = ''
@@ -354,7 +364,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
     # Recurse through subelements first.
     tal = checkalign(t, thisalign, allowchange)
     # Handling of 'implicitly aligning tags', i.e. <center>:
-    if s.startswith('<center>'):
+    if tagname == 'center':
       if 'CHANGE' in tal:
         # align needs change -- which can (only) be done by deleting the tag.
         movecontentsbefore(t, t)
@@ -600,12 +610,12 @@ r = soup.findAll(text=lambda text:isinstance(text, Comment))
 # and so that we're sure we are not skipping tags in the code below
 for t in soup.findAll('b'):
   e = Tag(soup, 'strong')
-  t.parent.insert(indexInParent(t), e)
+  t.parent.insert(getindexinparent(t), e)
   movecontentsinside(t, e)
   t.extract()
 for t in soup.findAll('i'):
   e = Tag(soup, 'em')
-  t.parent.insert(indexInParent(t), e)
+  t.parent.insert(getindexinparent(t), e)
   movecontentsinside(t, e)
   t.extract()
 
@@ -660,7 +670,7 @@ for t in r:
         e.extract()
       # make 'strong' tag and move e inside it
       e = Tag(soup, 'strong')
-      t.parent.insert(indexInParent(t), e)
+      t.parent.insert(getindexinparent(t), e)
       e.insert(0, t)
 
 # Delete tables with one TR having one TD - these are useless
@@ -680,7 +690,7 @@ for t in r:
       # need to accomodate for that.
       e = Tag(soup, 'div')
       e['style'] = 'text-align: left'
-      t.parent.insert(indexInParent(t), e)
+      t.parent.insert(getindexinparent(t), e)
       movecontentsinside(r_td[0], e)
       t.extract()
 
@@ -723,7 +733,7 @@ for t in r:
     # Again: content inside a 'td' is left aligned by default, so we
     # need to accomodate for that.
     e['style'] = 'text-align: left'
-    l = indexInParent(t)
+    l = getindexinparent(t)
     t.parent.insert(l, e)
     # insert li's and move all the contents from the second td's into there
     # (Is it always legal to just 'dump everything' inside a li? Let's hope so.)
@@ -774,8 +784,8 @@ for t in r:
   innerdest = False
 
   ee = t.parent
-  s = t.__repr__()
-  if s.startswith('<p>') or s.startswith('<p ') or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
+  tagname = gettagname(t)
+  if tagname in ['p', 'span', 'div']:
     r1 = ee.findAll(recursive=False)
     if len(r1) == 1: # only font
       r1 = ee.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
@@ -790,14 +800,14 @@ for t in r:
       r1 = ee.findAll(recursive=False)
       if len(r1) == 1:
         # Only one child tag and no non-ws tag.
-        s = r1[0].__repr__()
-        if s.startswith('<p>') or s.startswith('<p ' )or s.startswith('<span>') or s.startswith('<span ') or s.startswith('<div>') or s.startswith('<div '):
+        tagname = gettagname(r1[0])
+        if tagname in ['p', 'span', 'div']:
           e = r1[0]
   if e is None:
     # Cannot use a direct parent/child. Make a new span.
     # WARNING: see comment on top of this section.
     e = Tag(soup, 'span')
-    t.parent.insert(indexInParent(t), e)
+    t.parent.insert(getindexinparent(t), e)
 
   # Get the styles which we're going to add to e -- as a dict.
   estyle = getstyle(e)
@@ -893,23 +903,22 @@ for t in soup.findAll('br'):
       e = t2.nextSibling
       if e.__repr__() != '<br />':
         pe = t.parent
-        s = pe.__repr__()
-        if s.startswith('<p>') or s.startswith('<p '):
+        if gettagname(pe) == 'p':
           # We have exactly two <br>s, inside a <p>.
           # Move contents after t2 to a new paragraph.
           e = t2.nextSibling
           if e == None:
             # The two br's were at the end of a paragraph. Weirdness.
             # Move them outside (just after) the paragraph.
-            pe.parent.insert(indexInParent(pe) + 1, t2)
-            pe.parent.insert(indexInParent(pe) + 1, t)
+            pe.parent.insert(getindexinparent(pe) + 1, t2)
+            pe.parent.insert(getindexinparent(pe) + 1, t)
           else:
-            i = indexInParent(pe) + 1
+            i = getindexinparent(pe) + 1
             e = NavigableString('\n')
             pe.parent.insert(i,e)
             e = Tag(soup, 'p')
             pe.parent.insert(i + 1, e)
-            movecontentsinside(pe, e, 0, indexInParent(t2) + 1)
+            movecontentsinside(pe, e, 0, getindexinparent(t2) + 1)
             t2.extract()
             t.extract()
 # If the end of the existing / start of the new paragraph) is now markup
@@ -943,11 +952,8 @@ if c_remove_empty_paragraphs_under_blocks:
       e2 = t.nextSibling
       while str(e2) == '\n':
         e2 = e2.nextSibling
-      if e2.__class__.__name__ == 'Tag' and len(e2.contents) == 0:
-        # There really is no better way of findinig out whether e2 is a <p>?
-        s = e2.__repr__()
-        if s.startswith('<p>') or s.startswith('<p '):
-          e2.extract()
+      if gettagname(e2) == 'p' and len(e2.contents) == 0:
+        e2.extract()
 
 
 #####
@@ -965,23 +971,22 @@ if c_remove_empty_paragraphs_under_blocks:
 rx_p_start = re.compile('^\<p(?:\s|\>)')
 # Checks if the array of elements is a list of button links.
 def isbuttonlinks(elements):
-    buttonlink_found = False
-    # (Testing assumption:) all elements on this level must be 'a' tags.
-    for e in elements:
-        if saferegexsearch(e, rxglobal_spacehmtl_only):
-          continue
-        s = e.__repr__()
-        if not s.startswith('<a '):
-          return False
-        href = e.get('href')
-        if not href:
-          return False
-        if href.endswith('index.htm') or  href.endswith('nieuw.htm'):
-          # This is not always the first buttonn (that may be a 'previous' link
-          # with an arbitrary name) but if we encounter this, we assume these
-          # are all button links.
-          buttonlink_found = True
-    return buttonlink_found
+  buttonlink_found = False
+  # (Testing assumption:) all elements on this level must be 'a' tags.
+  for e in elements:
+    if saferegexsearch(e, rxglobal_spacehmtl_only):
+      continue
+    if gettagname(e) != 'a':
+      return False
+    href = e.get('href')
+    if not href:
+      return False
+    if href.endswith('index.htm') or  href.endswith('nieuw.htm'):
+      # This is not always the first buttonn (that may be a 'previous' link
+      # with an arbitrary name) but if we encounter this, we assume these
+      # are all button links.
+      buttonlink_found = True
+  return buttonlink_found
 
 # button links. Usually there's one to the index page but not always
 # the 'nieuw' is for the p-loog index page which doesn't
