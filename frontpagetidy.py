@@ -767,50 +767,50 @@ for t in r:
     t.extract()
 
 
-# Replace 'font color=' with 'span color=' -- it's more XHTML compliant and no hassle
-# Replace 'font' tags with style attributes. First look if there is a single
-# encompassing div/span/p, then look whether font encompasses a single one,
-# otherwise create a 'span' tag in place.
-#
-# ^^ "no hassle" IS NOT ACTUALLY TRUE in the last case! In cases where a font
-# tag surrounds one or several block-level elements, and putting a span there is
-# frowned upon, if not illegal. However, leaving a 'font' tag might be equally
-# bad... For the moment, we are just hoping that we have cleaned up all font
-# tags that fit this case, above. (Maybe we should clean up some code in the
-# below block instead.)
+# Replace 'font' tags with style attributes in another (new or existing) tag.
 r = soup.findAll('font')
-for t in r:
-  e = None
-  innerdest = False
+for font_tag in r:
+  dest = None
+  dest_is_child = False
 
-  ee = t.parent
-  tagname = gettagname(t)
-  if tagname in ['p', 'span', 'div']:
-    r1 = ee.findAll(recursive=False)
-    if len(r1) == 1: # only font
-      r1 = ee.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
-      if len(r1) == 0:
-        # Parent has only one child tag (the font) and no non-whitespace
-        # navstrings so we can dump all our style attributes here.
-        e = ee
-        innerdest = True
-  if e is None:
-    r1 = ee.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
-    if len(r1) == 0:
-      r1 = ee.findAll(recursive=False)
+  # Decide which is going to be the 'destination' tag, where we will move any
+  # style attributes to:
+  font_parent = font_tag.parent
+  # Check for single child element which can hold style attributes. (It seems
+  # like this is preferred over a parent element, because we prefer putting
+  # styles in the most specific one.)
+  # Find child non-space NavigableStrings(?): should find nothing.
+  r1 = font_tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+  if len(r1) == 0:
+    # Find child tags: should find one tag
+    r1 = font_tag.findAll(recursive=False)
+    if len(r1) == 1:
+      tagname = gettagname(r1[0])
+      if tagname in ['p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
+        dest = r1[0]
+        dest_is_child = True
+  if dest is None:
+    # Check for parent element which can hold style attributes, and where the
+    # <font> tag is the only child.
+    tagname = gettagname(font_parent)
+    if tagname in ['p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
+      r1 = font_parent.findAll(recursive=False)
       if len(r1) == 1:
-        # Only one child tag and no non-ws tag.
-        tagname = gettagname(r1[0])
-        if tagname in ['p', 'span', 'div']:
-          e = r1[0]
-  if e is None:
+        r1 = font_parent.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+        if len(r1) == 0:
+          dest = font_parent
+  if dest is None:
     # Cannot use a direct parent/child. Make a new span.
-    # WARNING: see comment on top of this section.
-    e = Tag(soup, 'span')
-    t.parent.insert(getindexinparent(t), e)
+    # WARNING: There could be a font tag surrounding one or several block-level
+    # elements; putting a span there is frowned upon, if not illegal. However,
+    # leaving a 'font' tag is probably equally bad... For the moment, we are
+    # just hoping that we have cleaned up all font tags where this is the case,
+    # above.
+    dest = Tag(soup, 'span')
+    font_parent.insert(getindexinparent(font_tag), dest)
 
   # Get the styles which we're going to add to e -- as a dict.
-  estyle = getstyle(e)
+  dest_styles = getstyle(dest)
   # t.attrs is list of tuples, so if you loop through it, you get tuples back.
   # Still, you can USE it as a dict type. So you can assign and delete stuff by
   # key; however, you may not delete stuff by key while iterating of the list of
@@ -818,12 +818,12 @@ for t in r:
 
   # Create list of keys first.
   attrs = []
-  for attr in t.attrs:
+  for attr in font_tag.attrs:
     attrs.append(attr[0])
   # Iterate over attributes. (Note: you get them as a list of tuples).
   for can in attrs:
     an = can.lower()
-    av = t.get(can)
+    av = font_tag.get(can)
     sn = ''
 
     if an == 'color':
@@ -834,27 +834,30 @@ for t in r:
       sn = 'font-size'
 
     if sn:
-      del t[an]
+      del font_tag[an]
       # Ignore the common font-family
       if sn != 'font-family' or av != c_common_font:
-        # Ignore the property if you want to assign to a span/div/p inside the
-        # font tag, and that already has the same property.
-        if not (innerdest and sn in s):
-          estyle[sn] = av
+        # Ignore the property if you want to assign to the child tag and that
+        # already has the same property.
+        if not (dest_is_child and sn in dest_styles):
+          dest_styles[sn] = av
 
-  # Put the style into e
+  # Put the style into the destination element.
   s = ''
-  for sn in estyle:
+  for sn in dest_styles:
     if s != '':
       s += '; '
-    s += sn + ': ' + estyle[sn]
-  e['style'] = s
+    s += sn + ': ' + dest_styles[sn]
+  dest['style'] = s
 
   # Since the font tag has only above 3 possible attributes, it should be empty now
   # but still check... Do not delete the font tag if it has 'unknown' properties
-  if len(t.attrs) == 0:
-      movecontentsinside(t, e)
-      t.extract()
+  if len(font_tag.attrs) == 0:
+    if dest_is_child:
+      movecontentsbefore(font_tag, font_tag)
+    else:
+      movecontentsinside(font_tag, dest)
+    font_tag.extract()
 
 
 # Delete/change superfluous alignment attributes (and <center> tags sometimes)
@@ -868,7 +871,7 @@ checkalign(soup.body, 'left')
 # sizes & colors in a tag, which we will delete here.)
 #
 # (h2 / h4 tags with cleanable attributes found in p-loog.info)
-for tagname in ('span', 'div', 'p', 'h2', 'h3', 'h4'):
+for tagname in ['span', 'div', 'p', 'h2', 'h3', 'h4']:
   for t in soup.findAll(tagname):
     # pass v as second argument. I know that's duplicate but t has no easy property to derive v from?
     mangleattributes(t, tagname)
@@ -927,7 +930,7 @@ for t in soup.findAll('br'):
 
 # The following needs to be done _after_ removing <span>s inside <p>s:
 
-for tagname in ('span', 'p', 'h2', 'h3', 'h4', 'li'):
+for tagname in ['span', 'p', 'h2', 'h3', 'h4', 'li']:
   for t in soup.findAll(tagname):
     # Remove newlines in the tags which are supposed to have 'simple' contents.
     # (We've seen paragraphs containing contents which are indented and
@@ -947,7 +950,7 @@ for tagname in ('span', 'p', 'h2', 'h3', 'h4', 'li'):
 
 # Remove empty paragraphs after 'block elements'
 if c_remove_empty_paragraphs_under_blocks:
-  for tagname in ('table', 'ul'):
+  for tagname in ['table', 'ul']:
     for t in soup.findAll(tagname):
       e2 = t.nextSibling
       while str(e2) == '\n':
