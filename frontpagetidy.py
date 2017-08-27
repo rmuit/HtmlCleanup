@@ -1,9 +1,9 @@
 #!/usr/bin/python
 
 # Read old MS FrontPage HTML document and tidy it up.
-# Contains site specific functions, so the script will need to be changed somewhat
-# for every site.
-# Version: 20100908/ploog+ipce.info
+# Contains site specific functions, so the script will need to be changed
+# somewhat for every site. Also: read the TODOs in the code for using this on
+# non-FrontPage documents.
 
 from optparse import OptionParser
 import os
@@ -135,19 +135,6 @@ def saferegexsearch(element, rx):
     return False
   return rx.search(str(element))
 
-# Remove all tags that only contain whitespace.
-# (Do not remove the contents. Move the contents outside; remove the tags.)
-def removetagcontainingwhitespace(tagname):
-  for e in soup.findAll(tagname):
-    ok = 1
-    for ee in e.contents:
-      if not(saferegexsearch(ee, rxglobal_spacehmtl_only)):
-        ok = 0
-        break
-    if ok:
-      movecontentsbefore(e, e)
-      e.extract()
-
 # Remove whitespace from start / end of a tag's contents.
 def removewhitespace(t):
   # First do end; this includes removing full-whitespace string and also <br>s.
@@ -209,8 +196,8 @@ def removenewlinesfromcontent(t):
       s = rxglobal_newline.sub(' ', str(e))
       e.replaceWith(s)
 
-# Get style attribute from tag, return it as dictionary
-def getstyle(t):
+# Get style attribute from tag, return it as dictionary. Keys always lowercase.
+def getstyles(t):
   s = t.get('style')
   r = {}
   if s:
@@ -277,7 +264,7 @@ def setstyle(t, attr, value):
 def getalign(t):
   talign = t.get('align')
   if not talign:
-    s = getstyle(t)
+    s = getstyles(t)
     if 'text-align' in s:
       talign = s['text-align']
   #align=middle is seen in some images
@@ -414,56 +401,57 @@ def checkalign(pe, parentalign, pallowchange = ''):
 
 # Filter out attributes from a tag; change some others.
 #
-# tagname is really a duplicate argument that could be derived from t
-# but stupidly, there's no nice argument for that?
-def mangleattributes(t, tagname):
-  #t.attrs is list of tuples
-  # so if you loop through it, you get tuples back
-  # still you can USE it as a dict type. So you can assign and delete stuff by key
-  # however you may not delete stuff by key while iterating of the list of attrs! That makes the iterator break off...
+# This is, and must remain, dempotent. mangletags() may call it multiple times.
+def mangleattributes(tag):
+  tagname = gettagname(tag)
+  # tag.attrs is list of tuples, so if you loop through it, you get tuples back.
+  # Still you can _use_ it as a dict type. So you can assign and delete stuff by
+  # key, however you may not delete attributes from the tag by key while
+  # iterating over its .attrs list! That makes the iterator break off. So
+  # create a list of keys first.
+  attr_names = []
+  for attr in tag.attrs:
+    attr_names.append(attr[0])
+  for orig_name in attr_names:
+    orig_value = tag.get(orig_name)
+    name = orig_name.lower()
+    value = orig_value.lower()
 
-  # create list of keys first
-  attrs = []
-  for attr in t.attrs:
-    attrs.append(attr[0])
+    if name == 'align':
+      # Replace deprecated align attribute by newer way. (Unlike the below,
+      # this call already resets the 'align' attribute itself, so we do not
+      # reset 'value', in order t skip the below code which changes attributes.
+      setalign(tag, value)
 
-  for can in attrs:
-    cav = t.get(can)
-    an = can.lower()
-    av = cav.lower()
-
-    if an == 'align':
-      # Replace deprecated align attribute by newer way
-      # (Unlike the below, this call already resets the 'align' attribute
-      #  itself, so we do not set av to '')
-      setalign(t, av)
-
-    elif an == 'margin-top':
+    elif name == 'margin-top':
       # on ploog, this is present in almost every paragraph. Should be made into standard css definition.
       if tagname == 'p':
-        av = ''
+        value = ''
 
-    elif an == 'class':
-      classes = cav.split()
-      for av in classes:
-        if av.lower() == 'msonormal':
-          classes.remove(av)
-      av = ' '.join(classes)
+    elif name == 'class':
+      classes = orig_value.split()
+      for value in classes:
+        if value.lower() == 'msonormal':
+          classes.remove(value)
+      value = ' '.join(classes)
 
-    elif an == 'lang':
-      # always remove 'lang' attributes
-      av = ''
+    elif name == 'lang':
+      # Always remove 'lang' attributes.
+      value = ''
 
-    elif an == 'style':
-      styledefs = av.split(';')
-      av = ''
+    elif name == 'style':
+      # Loop over style name/values; rebuild the attribute value from scratch.
+      styledefs = value.split(';')
+      value = ''
       for s in styledefs:
         if s.strip() != '':
           (sn, sv) = s.split(':', 1)
           sn = sn.strip()
           sv = sv.strip()
 
+          # Strip all styles whose value is equal to what we think is default:
           if sn == 'line-height':
+            # (Not completely sure if this is always ok...)
             if sv == '15.1pt' or sv == '15.1 pt' or sv == '100%' or sv == 'normal':
               sv = ''
 
@@ -490,22 +478,192 @@ def mangleattributes(t, tagname):
               sv = ''
 
           elif sn.startswith('mso-'):
-            # weird office specific styles? Never check, just delete and hope they didn't do anything
+            # Weird office specific styles? Never check, just delete and hope
+            # they didn't do anything.
             sv = ''
 
+          # Re-add the style value, unless we discarded it.
           if sv:
-            if av != '':
-              av += '; '
-            # gather possibly-chsnged styles
-            av += sn + ': ' + sv
+            if value != '':
+              value += '; '
+            value += sn + ': ' + sv
 
-    # check if tags have changed
-    # also change uppercase attribute names to lower
-    if an != can or av != cav.lower():
-      if an != can or not av:
-        del t[can]
-      if av:
-        t[an] = av
+    # Check if attributes have changed (but don't change case only); always
+    # change attribute names to lower case.
+    if name != orig_name or value != orig_value.lower():
+      if name != orig_name or not value:
+        del tag[orig_name]
+      if value:
+        tag[name] = value
+
+
+# Try to move all attributes out of the current tag (into parent or only child);
+# if this is possible or the tag has no attributes, remove the tag. This can
+# also change/delete attributes.
+#
+# This can be used to remove 'purely inline' (non-'position') tags. There is
+# special handling for <font> which we always want to remove: if we cannot move
+# all its attributes somewhere else then we replace it by a <span>.
+def mangletag(tag):
+  dest = None
+  dest_is_child = False
+  dest_is_new = False
+
+  # Decide which is going to be the 'destination' tag, where we will move any
+  # style attributes to:
+  #
+  # Check for single child element which can hold style attributes. (It seems
+  # like this is preferred over a parent element, because we prefer putting
+  # styles in the most specific one.) Note we will also match 'position' tags
+  # even though they should never be found inside 'inline' tags; if this ever
+  # happens, then we will surely want to get rid of the 'inline' tag.
+  # Find child non-space NavigableStrings(?): should find nothing.
+  r1 = tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+  if len(r1) == 0:
+    # Find child tags: should find one tag.
+    r1 = tag.findAll(recursive=False)
+    if len(r1) == 1:
+      tagname = gettagname(r1[0])
+      if tagname in ['p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
+        dest = r1[0]
+        dest_is_child = True
+  if dest is None:
+    # Check for parent element which can hold style attributes, and where the
+    # <font> tag is the only child.
+    parent_tag = tag.parent
+    tagname = gettagname(parent_tag)
+    if tagname in ['p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
+      r1 = parent_tag.findAll(recursive=False)
+      if len(r1) == 1:
+        r1 = parent_tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+        if len(r1) == 0:
+          dest = parent_tag
+
+  tagname = gettagname(tag)
+  if dest is None:
+    if tagname == 'font':
+      # Cannot use a direct parent/child. Make new <span> to replace the <font>.
+      # This could be weird in theory; there could be a font tag surrounding one
+      # or several block-level elements; putting a span there is frowned upon,
+      # if not illegal. However, leaving a 'font' tag is probably equally bad...
+      # For the moment, we are just hoping that we have cleaned up all font tags
+      # where this is the case, above.
+      dest = Tag(soup, 'span')
+      parent_tag.insert(getindexinparent(tag), dest)
+      dest_is_new = True
+    else:
+      # We cannot merge this tag into another one, but we'll also change
+      # attributes here if necessary.
+      mangleattributes(tag)
+      # If the tagname itself has no implicit meaning, remove it. (The <div>
+      # is disputable; it's not 100% sure that removing an empty one will not
+      # influence positioning/grouping. But we assume for MS Frontpage pages
+      # they are superfluous. See also: comments at caller.)
+      if len(tag.attrs) == 0 and tagname in ['span', 'div']:
+        movecontentsbefore(tag, tag)
+        tag.extract()
+      return
+
+  # Before we merge attributes, normalize their names/values.
+  mangleattributes(dest)
+  merge_classes = ''
+  merge_styles = {}
+  # Get the attributes (excl. style) and styles to merge into destination.
+  if tagname == 'font':
+    # Iterate over attributes and convert them all into styles; don't move any
+    # attributes as-is. (Note: you get attributes as a list of tuples.)
+    # We may not delete attributes from the tag by key while iterating over its
+    # .attrs list; that makes the iterator break. Create a list of keys first.
+    attr_names = []
+    for attr in tag.attrs:
+      attr_names.append(attr[0])
+    for can in attr_names:
+      an = can.lower()
+      av = t.get(can)
+      sn = ''
+
+      if an == 'color':
+        sn = 'color'
+      elif an == 'face':
+        sn = 'font-family'
+      elif an == 'size':
+        sn = 'font-size'
+
+      if sn:
+        del tag[an]
+        # Ignore the common font-family.
+        if sn != 'font-family' or av != c_common_font:
+          merge_styles[sn] = av
+    # Since the font tag has only above 3 possible attributes, it should be
+    # empty now. If it's not, we should re-check the code below to see whether
+    # things are
+    if len(tag.attrs) != 0:
+      exit('font end tag without start tag found at pos ' + str(pe))
+    # We have not checked whether merge_styles contain unneeded attributes; we
+    # will 'mangle' the new tag again after merging the styles into the
+    # destination tag. Also, unlike the 'else:' block below we don't check if
+    # there are styles to merge ours _into_.
+
+  else:
+    mangleattributes(tag)
+    # Styles and classes need to be merged into the destination tag, if that
+    # already has these attributes. If not, just move/merge the whole attribute
+    # along with the others.
+    if dest.get('style'):
+      merge_styles = getstyles(tag)
+    if dest.get('class'):
+      merge_classes = tag.get('class')
+
+
+  # Merge the attributes into the destination.
+  for attr in tag.attrs:
+    # Overwrite the value into the destination, except if:
+    # - the destination is the child, which has the same attribute; then skip.
+    # - the destination also has the 'style/class' attribute; then merge below.
+    dest_value = dest.get(attr[0])
+    if not (dest_value and (dest_is_child or attr[0] in ['style', 'class'])):
+      dest[attr[0]] = attr[1]
+
+  # Merge classes into the destination.
+  if merge_classes:
+    # We know destination classes exist.
+    classes = set(
+      map(str.lower, re.split('\s+', dest.get('class')))
+    ).union(set(
+      map(str.lower, re.split('\s+', merge_classes))
+    ))
+    dest['class'] = ' '.join(classes)
+
+  # Merge styles into the destination.
+  if merge_styles:
+    dest_styles = getstyles(dest)
+    for name in merge_styles:
+      # If the destination already has the style: overwrite child value into
+      # parent, or skip if the destination is the child.
+      if not (dest_is_child and name in dest_styles):
+        dest_styles[name] = merge_styles[name]
+    # Reconstruct the style and put it back into the destination element.
+    s = ''
+    for name in dest_styles:
+      if s != '':
+        s += '; '
+      s += name + ': ' + dest_styles[name]
+    dest['style'] = s
+
+  # Now move the old tag content and remove the tag.
+  if dest_is_new:
+    movecontentsinside(tag, dest)
+  else:
+    # Move everything into the parent, just before the tag. (If the destination
+    # is the child tag, "everything" includes the destination.)
+    movecontentsbefore(tag, tag)
+  tag.extract()
+
+  # It is possible that some styles that we copied from the font tag are not
+  # needed. In order to not have to change more code: check destination again.
+  if tagname == 'font':
+    mangleattributes(dest)
+
 
 ##### Start the action
 
@@ -597,17 +755,16 @@ for r in rx1.finditer(html):
 
 soup = BeautifulSoup(html)
 
-# Delete all script tags
-# (I don't know this syntax; just deduced it from the docs :) )
+# Delete all script tags.
 r = soup.findAll('script')
 [e.extract() for e in r]
 
-# delete comments
+# Delete comments; we assume we never want to keep MS Frontpage comments.
 r = soup.findAll(text=lambda text:isinstance(text, Comment))
 [e.extract() for e in r]
 
-#Replace b->strong and i->em, for XHTML compliance
-# and so that we're sure we are not skipping tags in the code below
+# Replace b->strong and i->em, for XHTML compliance, and so that we're sure we
+# are not skipping tags in the code below
 for t in soup.findAll('b'):
   e = Tag(soup, 'strong')
   t.parent.insert(getindexinparent(t), e)
@@ -621,6 +778,9 @@ for t in soup.findAll('i'):
 
 # Remove stupid MSFT 'o:p' tags. Apparently it is best for the document flow,
 # if we get rid of some markup whitespace (not &nbsp) inside these tags too...
+#
+# NOTE: this old comment does not seem true anymore since we're also removing
+# &nbsp;? Fix later if needed.
 for t in soup.findAll('o:p'):
   removewhitespace(t)
   r2 = t.contents
@@ -630,9 +790,18 @@ for t in soup.findAll('o:p'):
 
 # Remove non-block tags that only contain whitespace.
 # (Do not remove the contents. Move the contents outside; remove the tags.)
-removetagcontainingwhitespace('strong')
-removetagcontainingwhitespace('em')
-removetagcontainingwhitespace('font')
+for tagname in ['strong', 'em', 'font']:
+  for t in soup.findAll(tagname):
+    # The number of 'contents' may be more than one, to account for e.g.
+    # standalone \n at start/end.
+    ok = 1
+    for e in t.contents:
+      if not(saferegexsearch(e, rxglobal_spacehmtl_only)):
+        ok = 0
+        break
+    if ok:
+      movecontentsbefore(t, t)
+      t.extract()
 
 #NO. Don't do this. Keep the 'b's outside the 'a's... Keep this code for reference, maybe later...
 #
@@ -655,16 +824,17 @@ removetagcontainingwhitespace('font')
 #      movecontentsbefore(ee, ee)
 #      ee.extract()
 
-# Some 'a' tags have 'b' tags surrounding them, and some have 'b' tags inside them.
-# Normalize this;
+# Some 'a' tags have 'strong' tags surrounding them, and some have 'strong' tags
+# inside them. Normalize this so that 'a' is always inside.
+# Maybe TODO: have a class for 'strong' links?
 r = soup.findAll('a')
 for t in r:
   r1 = t.findAll('strong', recursive=False)
   if r1:
     r2 = t.findAll(recursive=False)
     if len(r1) == len(r2) and len(t.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)) == 0:
-      # all tags are 'b' and all navigablestrings are whitespace.
-      # Delete the 'b' (can be a chain of multiple, in extreme weird cases)
+      # all tags are 'strong' and all navigablestrings are whitespace.
+      # Delete the 'strong' (can be a chain of multiple, in extreme weird cases)
       for e in r1:
         movecontentsbefore(e, e)
         e.extract()
@@ -767,117 +937,25 @@ for t in r:
     t.extract()
 
 
-# Replace 'font' tags with style attributes in another (new or existing) tag.
-r = soup.findAll('font')
-for font_tag in r:
-  dest = None
-  dest_is_child = False
-
-  # Decide which is going to be the 'destination' tag, where we will move any
-  # style attributes to:
-  font_parent = font_tag.parent
-  # Check for single child element which can hold style attributes. (It seems
-  # like this is preferred over a parent element, because we prefer putting
-  # styles in the most specific one.)
-  # Find child non-space NavigableStrings(?): should find nothing.
-  r1 = font_tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
-  if len(r1) == 0:
-    # Find child tags: should find one tag
-    r1 = font_tag.findAll(recursive=False)
-    if len(r1) == 1:
-      tagname = gettagname(r1[0])
-      if tagname in ['p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
-        dest = r1[0]
-        dest_is_child = True
-  if dest is None:
-    # Check for parent element which can hold style attributes, and where the
-    # <font> tag is the only child.
-    tagname = gettagname(font_parent)
-    if tagname in ['p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
-      r1 = font_parent.findAll(recursive=False)
-      if len(r1) == 1:
-        r1 = font_parent.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
-        if len(r1) == 0:
-          dest = font_parent
-  if dest is None:
-    # Cannot use a direct parent/child. Make a new span.
-    # WARNING: There could be a font tag surrounding one or several block-level
-    # elements; putting a span there is frowned upon, if not illegal. However,
-    # leaving a 'font' tag is probably equally bad... For the moment, we are
-    # just hoping that we have cleaned up all font tags where this is the case,
-    # above.
-    dest = Tag(soup, 'span')
-    font_parent.insert(getindexinparent(font_tag), dest)
-
-  # Get the styles which we're going to add to e -- as a dict.
-  dest_styles = getstyle(dest)
-  # t.attrs is list of tuples, so if you loop through it, you get tuples back.
-  # Still, you can USE it as a dict type. So you can assign and delete stuff by
-  # key; however, you may not delete stuff by key while iterating of the list of
-  # attrs! That makes the iterator break off...
-
-  # Create list of keys first.
-  attrs = []
-  for attr in font_tag.attrs:
-    attrs.append(attr[0])
-  # Iterate over attributes. (Note: you get them as a list of tuples).
-  for can in attrs:
-    an = can.lower()
-    av = font_tag.get(can)
-    sn = ''
-
-    if an == 'color':
-      sn = 'color'
-    elif an == 'face':
-      sn = 'font-family'
-    elif an == 'size':
-      sn = 'font-size'
-
-    if sn:
-      del font_tag[an]
-      # Ignore the common font-family
-      if sn != 'font-family' or av != c_common_font:
-        # Ignore the property if you want to assign to the child tag and that
-        # already has the same property.
-        if not (dest_is_child and sn in dest_styles):
-          dest_styles[sn] = av
-
-  # Put the style into the destination element.
-  s = ''
-  for sn in dest_styles:
-    if s != '':
-      s += '; '
-    s += sn + ': ' + dest_styles[sn]
-  dest['style'] = s
-
-  # Since the font tag has only above 3 possible attributes, it should be empty now
-  # but still check... Do not delete the font tag if it has 'unknown' properties
-  if len(font_tag.attrs) == 0:
-    if dest_is_child:
-      movecontentsbefore(font_tag, font_tag)
-    else:
-      movecontentsinside(font_tag, dest)
-    font_tag.extract()
-
-
 # Delete/change superfluous alignment attributes (and <center> tags sometimes)
 checkalign(soup.body, 'left')
 
-
-# Look through tags, change some attributes if necessary, AND remove div/span
-# tags without attributes. (There may be <div>s left by checkalign(); often
-# there are also unnecessary <span>s inside <p>s.)
-# (This should be after the font-elimination code since that may have put font
-# sizes & colors in a tag, which we will delete here.)
-#
-# (h2 / h4 tags with cleanable attributes found in p-loog.info)
-for tagname in ['span', 'div', 'p', 'h2', 'h3', 'h4']:
+# Check if we can get rid of some 'inline' (not 'positioning') tags if we move
+# their attributes to a child/parent; also normalize their attributes. <font>
+# must come first; it has special handling so it's always removed (and replaced
+# by <span> if necessary). 'div' is not an inline element but we assume we can
+# remove it for MS Frontpage pages without trouble. (If this turns out not to be
+# the case, we might need to change checkalign() because that may leave empty
+# <div>s around which are in fact unnecessary.)
+for tagname in ['font', 'span', 'div']:
   for t in soup.findAll(tagname):
-    # pass v as second argument. I know that's duplicate but t has no easy property to derive v from?
-    mangleattributes(t, tagname)
-    if len(t.attrs) == 0 and (tagname == 'span' or tagname == 'div'):
-      movecontentsbefore(t, t)
-      t.extract()
+    mangletag(t)
+# Normalize other tags' attributes if necessary.
+#
+# (h2 / h4 tags with cleanable attributes found in one website. Adding h3.)
+for tagname in ['p', 'h2', 'h3', 'h4']:
+  for t in soup.findAll(tagname):
+    mangleattributes(t)
 
 # Remove whitespace just before <br>.
 # Strictly we only need to move 'HTML whitespace' (&nbsp;), but that may be
@@ -945,7 +1023,7 @@ for tagname in ['span', 'p', 'h2', 'h3', 'h4', 'li']:
     # why not. WARNING: This removes <br> fron the end too which may not always
     # be a great idea, but we won't rewrite that part until we see trouble with
     # it.)
-    if tagname != 'em':
+    if tagname != 'span':
       removewhitespace(t)
 
 # Remove empty paragraphs after 'block elements'
@@ -1083,9 +1161,6 @@ while v:
       v = 0 # other nonempty paragraph while v==1
   else:
     v = 0 # other tag/NavigableString
-
-###TODO: remove unnecessary html entities like &ldquo, or stuff?
-# no, FG might object to "different" quotes?
 
 # BeautifulSoup (at least 3.x tested so far) outputs <br />, which is kind-of
 # illegal and certainly unnecessary as HTML.
