@@ -25,26 +25,55 @@ fname = args[0]
 ### 'constants' for constructs we need to use in site specific code, or
 ### functionality that feels best to be able to turn on/off:
 #
-# - remove empty paragraphs after <ul>. (It _seems_ this is something you would
+# - Remove atrributes mentioned in this two-dimensional dict. First key is
+#   tagname or '*' to remove the specified attributes for all tags; second key
+#   attribute name (no '*' implemented). Values can be a single attribute value
+#   or a list of values for which the attribute should be removed. The single
+#   value '*' will always remove the attribute.
+# There are also attributes which are 'hardcoded' and will always be removed/
+# changed; see the code.
+c_remove_attributes = {
+  # <font> tags will be converted to spans with their attribute names converted
+  # to style names. Regardless, to remove the common font-family: specify
+  # 'face' here. It often happens that two font definitions are used: one with
+  # several families and one with only the first. To remove both, specify both.
+  'font': {'face': ['Book Antiqua, Times New Roman, Times', 'Book Antiqua']},
+  # Remove any language value from any tag.
+  '*': {
+    'lang': '*',
+  },
+  # We've seen a website where 'margin-top' is present in almost any
+  # paragraph and we don't want this in the output.
+  # 'p': { 'margin-top': '*' }
+}
+# - Same for the 'style' attribute. (Mentioning 'style' in c_remove_attributes
+#   is possible but discouraged; define styles to remove here, in the same way.)
+c_remove_styles = {
+  '*': {
+    'line-height': ['100%', 'normal', '15.1 pt'],
+    # Remove black from everywhere. (May not be what we always want...)
+    'color': ['black', '#000', '#000000'],
+    'text-autospace': 'none',
+  },
+  'h2': {'color' : '#996600'},
+  'h3': {'color' : '#999900'},
+}
+# - Images which should be converted to 'li' tag when found inside a table with
+#   a specific structure. Format: regex.
+c_img_bullet_re = '(rom|exp)bul.?.?\.gif$'
+# - Remove empty paragraphs after <ul>. (It _seems_ this is something you would
 #   always want to arrange in styling... but removing them may change vertical
 #   spacing / make things inconsistent, it if there are <ul>s with and without
 #   empty paragraphs below them.
 c_remove_empty_paragraphs_under_blocks = True
 
-# - the font name (used in all illegal font tags which should be stripped out
-#   before even feeding the HTML to BeautifulSoup
-# - name of the image which should be converted to 'li' tag when found
-#
-## if you use this script for different sites, insert favourite way of
-## distinguishing between them, here:
-if os.path.abspath(fname).find('ipce') != -1:
-  c_common_font = 'Book Antiqua, Times New Roman, Times'
-  # We now have several themes; as long as we can encode all bullet GIFs into
-  # one regexp, we'll keep the current code.
-  c_img_bullet_re = '(rom|exp)bul.?.?\.gif$'
-else:
-  c_common_font = 'Arial, Helvetica'
+# CUSTOM. TODO REMOVE
+if os.path.abspath(fname).find('ipce') == -1:
   c_img_bullet_re = 'posbul.?.?\.gif$'
+  c_remove_attributes['p'] = { 'margin-top': '*' }
+  c_remove_attributes['font']['face'] = ['Arial, Helvetica',  'Arial']
+  c_remove_styles['*']['line-height'].append('15.1pt')
+  c_remove_styles['*']['font-size'] = ['12pt', '3']
 
 ### THESE REGEXES ARE REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
 #
@@ -417,16 +446,26 @@ def mangleattributes(tag):
     name = orig_name.lower()
     value = orig_value.lower()
 
-    if name == 'align':
-      # Replace deprecated align attribute by newer way. (Unlike the below,
-      # this call already resets the 'align' attribute itself, so we do not
-      # reset 'value', in order t skip the below code which changes attributes.
-      setalign(tag, value)
+    # Check if we should remove this attribute.
+    remove = False
+    if tagname in c_remove_attributes and name in c_remove_attributes[tagname]:
+      if isinstance(c_remove_attributes[tagname][name], list):
+        remove = value in c_remove_attributes[tagname][name]
+      else:
+        remove = c_remove_attributes[tagname][name] in [value, '*']
+    elif '*' in c_remove_attributes and name in c_remove_attributes['*']:
+      if isinstance(c_remove_attributes['*'][name], list):
+        remove = value in c_remove_attributes['*'][name]
+      else:
+        remove = c_remove_attributes['*'][name] in [value, '*']
+    if remove:
+      value = ''
 
-    elif name == 'margin-top':
-      # on ploog, this is present in almost every paragraph. Should be made into standard css definition.
-      if tagname == 'p':
-        value = ''
+    elif name == 'align':
+      # Replace deprecated align attribute by newer way. Unlike the below,
+      # this call already resets the 'align' attribute itself, so we do not
+      # reset 'value', in order to skip the below code which changes attributes.
+      setalign(tag, value)
 
     elif name == 'class':
       classes = orig_value.split()
@@ -435,45 +474,36 @@ def mangleattributes(tag):
           classes.remove(value)
       value = ' '.join(classes)
 
-    elif name == 'lang':
-      # Always remove 'lang' attributes.
-      value = ''
-
     elif name == 'style':
       # Loop over style name/values; rebuild the attribute value from scratch.
-      styledefs = value.split(';')
+      styledefs = orig_value.split(';')
       value = ''
       for s in styledefs:
         if s.strip() != '':
           (sn, sv) = s.split(':', 1)
           sn = sn.strip()
           sv = sv.strip()
+          # We want to keep case of style name/values but not for comparison.
+          lsn = sn.lower()
+          lsv = sv.lower()
 
-          # Strip all styles whose value is equal to what we think is default:
-          if sn == 'line-height':
-            # (Not completely sure if this is always ok...)
-            if sv == '15.1pt' or sv == '15.1 pt' or sv == '100%' or sv == 'normal':
-              sv = ''
-
-          elif sn == 'color':
-            if sv == 'black' or sv == '#000' or sv == '#000000':
-              sv = ''
-
-          elif sn == 'text-autospace':
-            if sv == 'none':
-              sv = ''
-
-          elif sn == 'font-family':
-            if sv == 'arial' and c_common_font.find('Arial') == 0:
-              sv = ''
-
-          elif sn == 'font-size':
-            #on ploog, I see '12pt' and '3' and I see no difference
-            # Possibly, this should only be stripped on ploog. Use trick for that
-            if (sv == '12pt' or sv == '3') and c_common_font.find('Arial') == 0:
-              sv = ''
+          # Check if we should remove this style.
+          remove = False
+          if tagname in c_remove_styles and lsn in c_remove_styles[tagname]:
+            if isinstance(c_remove_styles[tagname][lsn], list):
+              remove = lsv in c_remove_styles[tagname][lsn]
+            else:
+              remove = c_remove_styles[tagname][lsn] in [lsv, '*']
+          elif '*' in c_remove_styles and lsn in c_remove_styles['*']:
+            if isinstance(c_remove_styles['*'][lsn], list):
+              remove = lsv in c_remove_styles['*'][lsn]
+            else:
+              remove = c_remove_styles['*'][lsn] in [lsv, '*']
+          if remove:
+            sv = ''
 
           elif sn.startswith('margin'):
+            # Always remove small margins.
             if sv.isnumeric() and float(sv) < 0.02:
               sv = ''
 
@@ -594,7 +624,23 @@ def mangletag(tag):
       av = t.get(can)
       sn = ''
 
-      if an == 'color':
+      # Check if we should remove this attribute.
+      remove = False
+      if 'font' in c_remove_attributes and an in c_remove_attributes['font']:
+        if isinstance(c_remove_attributes['font'][an], list):
+          remove = av in c_remove_attributes['font'][an]
+        else:
+          remove = c_remove_attributes['font'][an] in [value, '*']
+      elif '*' in c_remove_attributes and an in c_remove_attributes['*']:
+        if isinstance(c_remove_attributes['*'][an], list):
+          remove = av in c_remove_attributes['*'][an]
+        else:
+          remove = c_remove_attributes['*'][an] in [value, '*']
+      if remove:
+        # Fall through but also remove the tag, for the len() check.
+        del tag[an]
+
+      elif an == 'color':
         sn = 'color'
       elif an == 'face':
         sn = 'font-family'
@@ -603,9 +649,8 @@ def mangletag(tag):
 
       if sn:
         del tag[an]
-        # Ignore the common font-family.
-        if sn != 'font-family' or av != c_common_font:
-          merge_styles[sn] = av
+        merge_styles[sn] = av
+
     # Since the font tag has only above 3 possible attributes, it should be
     # empty now. If it's not, we should re-check the code below to see whether
     # things are
@@ -697,7 +742,7 @@ html = html.replace('\r\n','\n')
 
 #####
 #
-# Clean up screwy HTML before parsing - #1:
+# Clean up completely wrong HTML before parsing - #1:
 #
 # Strip superfluous font tag, because FrontPage does stuff
 #  like <font> <center> </font> </center>, which makes HTMLTidy wronlgy
@@ -708,13 +753,19 @@ html = html.replace('\r\n','\n')
 # We've seen cases where there are also font tags containing _just_ the first
 # family, and we will treat that as equal - i.e. also superfluous / needs to be
 # stripped.
-font_families = [ c_common_font ]
-p = c_common_font.find(',')
-if (p > 0):
-  font_families.append( c_common_font[:p].strip() )
+#
+# This is a bit arbitrary because it only strips font tags with _only_ the
+# 'face' attribute. For better or worse, we so far are assuming that these are
+# the only "completely wrong" tags, and others can/will be handled by
+# BeautifulSoup (stripped/converted to spans if necessary) later.
+if 'font' in c_remove_attributes and 'face' in c_remove_attributes['font']:
+  if isinstance(c_remove_attributes['font']['face'], list):
+    font_families = c_remove_attributes['font']['face']
+  else :
+    font_families = [c_remove_attributes['font']['face']]
 
-len_end_tag = len('</font>')
-for font_family in font_families:
+  len_end_tag = len('</font>')
+  for font_family in font_families:
     s_tag_to_strip = '<font face="' + font_family + '">'
     pos = 0
     found = []
@@ -753,10 +804,10 @@ for font_family in font_families:
 
 #####
 #
-# Clean up screwy HTML before parsing - #2:
+# Clean up completely wrong HTML before parsing - #2:
 #
-# solve <b><p > .... </b> ... </p> by putting <b> inside <p>
-# (if not, BeatifulSoup will put a </p> before the </b> which will mess up formatting)
+# Solve <b><p > .... </b> ... </p> by putting <b> inside <p>. (If we don't,
+# BeatifulSoup will put a </p> before the </b> which will mess up formatting.)
 rx1 = re.compile('\<b\>(\s*\<p.*?\>)(.*?)\<\/b>', re.S)
 for r in rx1.finditer(html):
   if r.group(2).find('/p>') == -1:
@@ -765,7 +816,7 @@ for r in rx1.finditer(html):
 
 ##############
 ###
-### Now do the tidying work, using BeautifulSoup
+### Now do the tidying work, using BeautifulSoup.
 
 soup = BeautifulSoup(html)
 
