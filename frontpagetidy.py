@@ -502,12 +502,22 @@ def mangleattributes(tag):
 # also change/delete attributes.
 #
 # This can be used to remove 'purely inline' (non-'position') tags. There is
-# special handling for <font> which we always want to remove: if we cannot move
-# all its attributes somewhere else then we replace it by a <span>.
+# special handling for:
+# - <font> which we always want to remove: if we cannot move all its attributes
+#   somewhere else then we replace it by a <span>.
+# - <a> which only hold a name; we replace it by an id in another tag if that
+#   doesn't have one yet.
 def mangletag(tag):
   dest = None
   dest_is_child = False
   dest_is_new = False
+
+  tagname = gettagname(tag)
+  # Do pre-check for <a> to prevent needless processing: we only process
+  # non-'href' tags with a name attribute and no id. (Tags without href _or_
+  # name are strange enough to leave alone.)
+  if tagname == 'a' and (not tag.get('name') or tag.get('id') or tag.get('href')):
+    return
 
   # Decide which is going to be the 'destination' tag, where we will move any
   # style attributes to:
@@ -523,23 +533,25 @@ def mangletag(tag):
     # Find child tags: should find one tag.
     r1 = tag.findAll(recursive=False)
     if len(r1) == 1:
-      tagname = gettagname(r1[0])
-      if tagname in ['p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
-        dest = r1[0]
-        dest_is_child = True
+      name = gettagname(r1[0])
+      if name in ['a', 'p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
+        # A last deal breaker is if both tag and the destination have an id.
+        if not (tagname == 'a' or tag.get('id') and r1[0].get('id')):
+          dest = r1[0]
+          dest_is_child = True
   if dest is None:
     # Check for parent element which can hold style attributes, and where the
-    # <font> tag is the only child.
+    # tag is the only child - except for 'a' which is allowed to have siblings.
     parent_tag = tag.parent
-    tagname = gettagname(parent_tag)
-    if tagname in ['p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
+    name = gettagname(parent_tag)
+    if name in ['a', 'p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
       r1 = parent_tag.findAll(recursive=False)
       if len(r1) == 1:
-        r1 = parent_tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+        r1 = parent_tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False) if tagname != 'a' else []
         if len(r1) == 0:
-          dest = parent_tag
+          if not ((tagname == 'a' or tag.get('id')) and parent_tag.get('id')):
+            dest = parent_tag
 
-  tagname = gettagname(tag)
   if dest is None:
     if tagname == 'font':
       # Cannot use a direct parent/child. Make new <span> to replace the <font>.
@@ -617,12 +629,14 @@ def mangletag(tag):
 
   # Merge the attributes into the destination.
   for attr in tag.attrs:
+    # One special case: <a name> becomes id. We've checked duplicates already.
+    dest_name = attr[0] if (tagname != 'a' or attr[0] != 'name') else 'id'
     # Overwrite the value into the destination, except if:
     # - the destination is the child, which has the same attribute; then skip.
     # - the destination also has the 'style/class' attribute; then merge below.
-    dest_value = dest.get(attr[0])
+    dest_value = dest.get(dest_name)
     if not (dest_value and (dest_is_child or attr[0] in ['style', 'class'])):
-      dest[attr[0]] = attr[1]
+      dest[dest_name] = attr[1]
 
   # Merge classes into the destination.
   if merge_classes:
@@ -947,7 +961,7 @@ checkalign(soup.body, 'left')
 # remove it for MS Frontpage pages without trouble. (If this turns out not to be
 # the case, we might need to change checkalign() because that may leave empty
 # <div>s around which are in fact unnecessary.)
-for tagname in ['font', 'span', 'div']:
+for tagname in ['font', 'div', 'span', 'a']:
   for t in soup.findAll(tagname):
     mangletag(t)
 # Normalize other tags' attributes if necessary.
