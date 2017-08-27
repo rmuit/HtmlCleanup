@@ -564,7 +564,7 @@ def mangletag(tag):
     r1 = tag.findAll(recursive=False)
     if len(r1) == 1:
       name = gettagname(r1[0])
-      if name in ['a', 'p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
+      if name in ['a', 'p', 'span', 'div', 'h2', 'h3', 'h4', 'li', 'blockquote']:
         # A last deal breaker is if both tag and the destination have an id.
         if not (tagname == 'a' or tag.get('id') and r1[0].get('id')):
           dest = r1[0]
@@ -574,7 +574,9 @@ def mangletag(tag):
     # tag is the only child - except for 'a' which is allowed to have siblings.
     parent_tag = tag.parent
     name = gettagname(parent_tag)
-    if name in ['a', 'p', 'span', 'div', 'h2', 'h3', 'h4', 'li']:
+    # (XHTML specified that blockquote must contain block-level elements. No
+    # more; in HTML it may contain just text.)
+    if name in ['a', 'p', 'span', 'div', 'h2', 'h3', 'h4', 'li', 'blockquote']:
       r1 = parent_tag.findAll(recursive=False)
       if len(r1) == 1:
         r1 = parent_tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False) if tagname != 'a' else []
@@ -1008,10 +1010,16 @@ checkalign(soup.body, 'left')
 # Check if we can get rid of some 'inline' (not 'positioning') tags if we move
 # their attributes to a child/parent; also normalize their attributes. <font>
 # must come first; it has special handling so it's always removed (and replaced
-# by <span> if necessary). 'div' is not an inline element but we assume we can
-# remove it for MS Frontpage pages without trouble. (If this turns out not to be
-# the case, we might need to change checkalign() because that may leave empty
-# <div>s around which are in fact unnecessary.)
+# by <span> if necessary). We're not sure of what definition we adhere to yet:
+# - <div> is not an inline element but we assume we can remove it for MS
+#   Frontpage pages without trouble. (If this turns out not to be the case, we
+#   might need to change checkalign() because that may leave empty <div>s
+#   around which are in fact unnecessary.)
+# - <p> is also not an inline element, but we assume we can remove it if it is
+#   the single tag wrapped in another element (like e.g. blockquote, li). (Or
+#   wrapping a single other element, but that probably won't happen.) We must
+#   leave it at the end though, because we want other tags to be removed in
+#   favor of <p>. Also we want to remove spacing in paragraphs before dong this.
 for tagname in ['font', 'div', 'span', 'a']:
   for t in soup.findAll(tagname):
     mangletag(t)
@@ -1100,6 +1108,11 @@ if c_remove_empty_paragraphs_under_blocks:
         e2 = e2.nextSibling
       if gettagname(e2) == 'p' and len(e2.contents) == 0:
         e2.extract()
+
+# As said above: now that we're done removing spacing, remove <p>s which are
+# wrapped insidee (or wrapping?) a single non-positioning tag.
+for t in soup.findAll('p'):
+  mangletag(t)
 
 
 #####
