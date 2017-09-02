@@ -77,11 +77,12 @@ c_remove_empty_paragraphs_under_blocks = True
 
 ### THESE REGEXES ARE REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
 #
-# Regexes containing HTML tags. These can be used on all elements but they will
-# match _either_ a 'br' _or_ a combination of anything else - because <br>s are
-# Tags and are never found inside a NavigableString.
+# Regexes containing HTML tags. These can be used for matching:
+# - an element that you don't know is a tag or NavigableString;
+# - the full text representation of a tag.
+# Should not be used on things we know are NavigableStrings, because useless,
+# therefore introducing ambiguity in the code.
 rxglobal_spacehmtl_only = re.compile('^(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
-rxglobal_spacehmtl_at_end = re.compile('(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
 #
 # Regexes usable on NavigableStrings.
 # We want to use thse for replacement (specifically by ''). Space excluding
@@ -90,17 +91,15 @@ rxglobal_spacehmtl_at_end = re.compile('(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
 # spaces. But even if they influence only formatting of the source HTML, we
 # explicitly want to 'fix' that for spaces at start/end of tag contents.
 #
-# Document: does \s include newlines (very probably no), and is that wanted? It
-# seems like for 'spaces_only', we want to include newlines too (because this is
-# typically used for matching/removing full contents of a tag) but we may not
-# want to include them at start/end (because if they are in the document, that's
-# probably on purpose because it provides nice formatting that we can preserve)?
+# To remember: NavigableStrings include newlines, and \s matches newlines.
 rxglobal_spaces_only = re.compile('^\s+$')
 rxglobal_spaces_at_start = re.compile('^\s+')
 rxglobal_spaces_at_end = re.compile('\s+$')
+rxglobal_nbspace_only = re.compile('^(?:\s|\&nbsp\;)+$')
 rxglobal_nbspace_at_end = re.compile('(?:\s|\&nbsp\;)+$')
 rxglobal_newline = re.compile('\s*\n+\s*')
-# This one is only usable for matching, not replacement:
+# This one is only usable for matching, not replacement (because we match only
+# one non-whitespace character and do not 'select' it):
 rxglobal_newline_at_end = re.compile('\S\n$')
 
 
@@ -170,9 +169,8 @@ def saferegexsearch(element, rx):
 # and easier to remember (i.e. the difference between t.findAll and t.contents)
 def getcontents(tag, contents_type):
   if contents_type == 'nonwhitespace_string':
-    # (Replacing rxglobal_spacehmtl_only by rxglobal_nbspace_only should do
-    # nothing, as the 'text' thing returns NavigableStrings only.)
-    return tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+    # Return non-whitespace NavigableStrings.
+    return tag.findAll(text=lambda x, r=rxglobal_nbspace_only: r.match(x)==None, recursive=False)
   elif contents_type == 'tags':
     return tag.findAll(recursive=False)
   # Default, though we're probably not going to call the function for this:
@@ -217,13 +215,13 @@ def stripwhitespacefromend(t):
       else:
         stripwhitespacefromend(e)
         break
-    elif saferegexsearch(e, rxglobal_spacehmtl_only):
+    elif saferegexsearch(e, rxglobal_nbspace_only):
       # Delete whole NavigableString consisting of whitespace.
       e.extract()
-    elif saferegexsearch(e, rxglobal_spacehmtl_at_end) and not saferegexsearch(e, rxglobal_newline_at_end):
+    elif saferegexsearch(e, rxglobal_nbspace_at_end) and not saferegexsearch(e, rxglobal_newline_at_end):
       # Extract whitespace from end of NavigableString (except when it's just a
       # newline for markup; we don't want to get everything on one line...)
-      s = rxglobal_spacehmtl_at_end.sub('', str(e))
+      s = rxglobal_nbspace_at_end.sub('', str(e))
       e.replaceWith(s)
     else:
       # Quit function.
@@ -947,8 +945,8 @@ for t in r:
       e.insert(i, ee)
       r_td = tr.findAll('td', recursive=False)
       #r_cont = r_td[1].findAll()
-      # In the preceding code we used findAll() because we assumed that there are no
-      # loose NavigableStrings in between tr's or td's.
+      # In the preceding code we used findAll() because we assumed that there
+      # are no loose NavigableStrings in between tr's or td's.
       # However with the contents of the second td, we can't take that chance.
       r_cont = filter(lambda x: x != '\n', r_td[1].contents)
       if len(r_cont) == 1:
@@ -964,7 +962,6 @@ for t in r:
           movecontentsinside(r_td[1], ee)
       else:
         movecontentsinside(r_td[1], ee)
-      stripwhitespacefromend(ee)
       ee = NavigableString('\n')
       e.insert(i + 1, ee)
       i = i + 2
@@ -1161,7 +1158,7 @@ def isbuttonlinks(elements):
   buttonlink_found = False
   # All elements on this level must be 'a' tags.
   for e in elements:
-    if saferegexsearch(e, rxglobal_spacehmtl_only):
+    if saferegexsearch(e, rxglobal_nbspace_only):
       continue
     if gettagname(e) != 'a':
       return False
