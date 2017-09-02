@@ -68,12 +68,12 @@ c_img_bullet_re = '(rom|exp)bul.?.?\.gif$'
 c_remove_empty_paragraphs_under_blocks = True
 
 # CUSTOM. TODO REMOVE
-if os.path.abspath(fname).find('ipce') == -1:
-  c_img_bullet_re = 'posbul.?.?\.gif$'
-  c_remove_attributes['p'] = { 'margin-top': '*' }
-  c_remove_attributes['font']['face'] = ['Arial, Helvetica',  'Arial']
-  c_remove_styles['*']['line-height'].append('15.1pt')
-  c_remove_styles['*']['font-size'] = ['12pt', '3']
+#if other_site:
+#  c_img_bullet_re = 'posbul.?.?\.gif$'
+#  c_remove_attributes['p'] = { 'margin-top': '*' }
+#  c_remove_attributes['font']['face'] = ['Arial, Helvetica',  'Arial']
+#  c_remove_styles['*']['line-height'].append('15.1pt')
+#  c_remove_styles['*']['font-size'] = ['12pt', '3']
 
 ### THESE REGEXES ARE REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
 #
@@ -147,8 +147,8 @@ def movecontentsinside(fromwithin, toinside, insertindex = 0, fromindex = 0):
     i = i + 1
 
 # Check if element matches regex; 'safe' replacement for rx.search(str(e))
-# where no error will be thrown when e is a tag (as opposed to NavigableString)
-# either.
+# where no error will be thrown regardless whether element is a tag or
+# NavigableString.
 def saferegexsearch(element, rx):
   # Difficulty here: str(ee) may give UnicodeEncodeError with some characters
   # and so may ee.__str__() and repr(ee) (the latter with some \x?? chars).
@@ -164,12 +164,27 @@ def saferegexsearch(element, rx):
     return False
   return rx.search(str(element))
 
+# Get filtered contents of a tag.
+#
+# This exists for making code easier to read (by extracting the lambda from it)
+# and easier to remember (i.e. the difference between t.findAll and t.contents)
+def getcontents(tag, contents_type):
+  if contents_type == 'nonwhitespace_string':
+    # (Replacing rxglobal_spacehmtl_only by rxglobal_nbspace_only should do
+    # nothing, as the 'text' thing returns NavigableStrings only.)
+    return tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+  elif contents_type == 'tags':
+    return tag.findAll(recursive=False)
+  # Default, though we're probably not going to call the function for this:
+  return tag.contents
+
+
 # Remove whitespace from start / end of a tag's contents.
-def removewhitespace(t):
+def stripwhitespace(t):
   # First do end; this includes removing full-whitespace string and also <br>s.
   # (We already have that function and don't want to look at whether it makes
   # sense to refactor it, right now.)
-  removewhitespacefromend(t)
+  stripwhitespacefromend(t)
   # Then do start. Keep \n at the start if it's there though; that's
   # formatting we want to keep.
   r = t.contents
@@ -192,7 +207,7 @@ def removewhitespace(t):
 # The definition of the regex we use makes this include non-breaking space. The
 # code below apparently makes this include 'HTML' newlines (i.e. <br>s) as well
 # as 'markup') newlines... which is slightly odd?
-def removewhitespacefromend(t):
+def stripwhitespacefromend(t):
   r = t.contents
   while len(r):
     e = r[-1]
@@ -200,7 +215,7 @@ def removewhitespacefromend(t):
       if e.__unicode__() == '<br />':
         e.extract()
       else:
-        removewhitespacefromend(e)
+        stripwhitespacefromend(e)
         break
     elif saferegexsearch(e, rxglobal_spacehmtl_only):
       # Delete whole NavigableString consisting of whitespace.
@@ -211,6 +226,7 @@ def removewhitespacefromend(t):
       s = rxglobal_spacehmtl_at_end.sub('', str(e))
       e.replaceWith(s)
     else:
+      # Quit function.
       break
 
 # Remove newlines + superfluous markup spacing from tags.
@@ -354,7 +370,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
   al = {}
   # Non-whitespace NavigableStrings always have alignment equal to the parent element.
   # (Whitespace strings don't matter; alignment can be changed without visible difference.)
-  r = pe.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+  r = getcontents(pe, 'nonwhitespace_string')
   if len(r):
     # Setting 'inherit' effectively means: prevent parent's alignment from being changed.
     al['inherit'] = True
@@ -430,7 +446,7 @@ def checkalign(pe, parentalign, pallowchange = ''):
 
 # Filter out attributes from a tag; change some others.
 #
-# This is, and must remain, dempotent. mangletags() may call it multiple times.
+# This is, and must remain, dempotent. mangletag() may call it multiple times.
 def mangleattributes(tag):
   tagname = gettagname(tag)
   # tag.attrs is list of tuples, so if you loop through it, you get tuples back.
@@ -558,10 +574,10 @@ def mangletag(tag):
   # even though they should never be found inside 'inline' tags; if this ever
   # happens, then we will surely want to get rid of the 'inline' tag.
   # Find child non-space NavigableStrings(?): should find nothing.
-  r1 = tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)
+  r1 = getcontents(tag, 'nonwhitespace_string')
   if len(r1) == 0:
     # Find child tags: should find one tag.
-    r1 = tag.findAll(recursive=False)
+    r1 = getcontents(tag, 'tags')
     if len(r1) == 1:
       name = gettagname(r1[0])
       if name in ['a', 'p', 'span', 'div', 'h2', 'h3', 'h4', 'li', 'blockquote']:
@@ -577,9 +593,9 @@ def mangletag(tag):
     # (XHTML specified that blockquote must contain block-level elements. No
     # more; in HTML it may contain just text.)
     if name in ['a', 'p', 'span', 'div', 'h2', 'h3', 'h4', 'li', 'blockquote']:
-      r1 = parent_tag.findAll(recursive=False)
+      r1 = getcontents(parent_tag, 'tags')
       if len(r1) == 1:
-        r1 = parent_tag.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False) if tagname != 'a' else []
+        r1 = getcontents(parent_tag, 'nonwhitespace_string') if tagname != 'a' else []
         if len(r1) == 0:
           if not ((tagname == 'a' or tag.get('id')) and parent_tag.get('id')):
             dest = parent_tag
@@ -822,6 +838,9 @@ for r in rx1.finditer(html):
 
 soup = BeautifulSoup(html)
 
+## Soup part 1: remove some structural things, and unify for compliant
+## HTML.
+
 # Delete all script tags.
 r = soup.findAll('script')
 [e.extract() for e in r]
@@ -849,66 +868,14 @@ for t in soup.findAll('i'):
 # NOTE: this old comment does not seem true anymore since we're also removing
 # &nbsp;? Fix later if needed.
 for t in soup.findAll('o:p'):
-  removewhitespace(t)
+  stripwhitespace(t)
   r2 = t.contents
   if len(r2):
     movecontentsbefore(t, t)
   t.extract()
 
-# Remove non-block tags that only contain whitespace.
-# (Do not remove the contents. Move the contents outside; remove the tags.)
-for tagname in ['strong', 'em', 'font']:
-  for t in soup.findAll(tagname):
-    # The number of 'contents' may be more than one, to account for e.g.
-    # standalone \n at start/end.
-    ok = 1
-    for e in t.contents:
-      if not(saferegexsearch(e, rxglobal_spacehmtl_only)):
-        ok = 0
-        break
-    if ok:
-      movecontentsbefore(t, t)
-      t.extract()
 
-#NO. Don't do this. Keep the 'b's outside the 'a's... Keep this code for reference, maybe later...
-#
-# links are rendered in bold, by default.
-# Some links have a 'b' around it, which makes no visual difference but
-# is an inconsistency in the document structure. Remove it.
-#r = soup.findAll('a')
-#for e in r:
-#  s = e.parent.__repr__()
-#  if s[0:3] == '<b>' and s[-4:] == '</b>':
-    # the 'b' may have more content than just the link. As long as that's all
-    # whitespace, there is still no difference in taking it away.
-#    ok = 1
-#    for ee in e.parent.contents:
-#      if ee != e and not(saferegexsearch(ee, rxglobal_spacehmtl_only)):
-#        ok = 0
-#        break
-#    if ok:
-#      ee = e.parent
-#      movecontentsbefore(ee, ee)
-#      ee.extract()
-
-# Some 'a' tags have 'strong' tags surrounding them, and some have 'strong' tags
-# inside them. Normalize this so that 'a' is always inside.
-# Maybe TODO: have a class for 'strong' links?
-r = soup.findAll('a')
-for t in r:
-  r1 = t.findAll('strong', recursive=False)
-  if r1:
-    r2 = t.findAll(recursive=False)
-    if len(r1) == len(r2) and len(t.findAll(text=lambda x, r=rxglobal_spacehmtl_only: r.match(x)==None, recursive=False)) == 0:
-      # all tags are 'strong' and all navigablestrings are whitespace.
-      # Delete the 'strong' (can be a chain of multiple, in extreme weird cases)
-      for e in r1:
-        movecontentsbefore(e, e)
-        e.extract()
-      # make 'strong' tag and move e inside it
-      e = Tag(soup, 'strong')
-      t.parent.insert(getindexinparent(t), e)
-      e.insert(0, t)
+## Soup part 2: work on large block elements in document structure.
 
 # Delete tables with one TR having one TD - these are useless
 # (take their contents out of the tables)
@@ -997,7 +964,7 @@ for t in r:
           movecontentsinside(r_td[1], ee)
       else:
         movecontentsinside(r_td[1], ee)
-      removewhitespacefromend(ee)
+      stripwhitespacefromend(ee)
       ee = NavigableString('\n')
       e.insert(i + 1, ee)
       i = i + 2
@@ -1006,6 +973,67 @@ for t in r:
 
 # Delete/change superfluous alignment attributes (and <center> tags sometimes)
 checkalign(soup.body, 'left')
+
+
+## Soup part 3: change/remove/unify contents of non-'large block' tags.
+#
+# Generally try to unify stuff before removing/changing stuff.
+
+# Some 'a' tags have 'strong' tags surrounding them, and some have 'strong' tags
+# inside them. Normalize this so that 'a' is always inside.
+r = soup.findAll('a')
+for t in r:
+  r1 = t.findAll('strong', recursive=False)
+  if r1:
+    r2 = t.findAll(recursive=False)
+    if len(r1) == len(r2) and len(getcontents(t, 'nonwhitespace_string')) == 0:
+      # all tags are 'strong' and all navigablestrings are whitespace.
+      # Delete the 'strong' (can be a chain of multiple, in extreme weird cases)
+      for e in r1:
+        movecontentsbefore(e, e)
+        e.extract()
+      # make 'strong' tag and move e inside it
+      e = Tag(soup, 'strong')
+      t.parent.insert(getindexinparent(t), e)
+      e.insert(0, t)
+# Maybe TODO: have a class for 'strong' links? That would remove the need for:
+# Links are rendered in bold, by default.
+# Some links have a 'b' around it, which makes no visual difference but
+# is an inconsistency in the document structure. Remove it.
+#r = soup.findAll('a')
+#for e in r:
+#  s = e.parent.__repr__()
+#  if s[0:3] == '<b>' and s[-4:] == '</b>':
+    # the 'b' may have more content than just the link. As long as that's all
+    # whitespace, there is still no difference in taking it away.
+#    ok = 1
+#    for ee in e.parent.contents:
+#      if ee != e and not(saferegexsearch(ee, rxglobal_spacehmtl_only)):
+#        ok = 0
+#        break
+#    if ok:
+#      ee = e.parent
+#      movecontentsbefore(ee, ee)
+#      ee.extract()
+
+# Remove inline tags that only contain whitespace.
+#
+# Do not remove the contents. Move the contents outside; remove the tags.
+# This could be useful to do before mangletag() stuff, because
+# - We don't have to deal with attributes inside these empty tags; they will
+#   just be removed. (This is useful for font; others should not have attrs.)
+for tagname in ['strong', 'em', 'font']:
+  for t in soup.findAll(tagname):
+    # The number of 'contents' may be more than one, to account for e.g.
+    # standalone \n at start/end.
+    ok = 1
+    for e in t.contents:
+      if not(saferegexsearch(e, rxglobal_spacehmtl_only)):
+        ok = 0
+        break
+    if ok:
+      movecontentsbefore(t, t)
+      t.extract()
 
 # Check if we can get rid of some 'inline' (not 'positioning') tags if we move
 # their attributes to a child/parent; also normalize their attributes. <font>
@@ -1097,7 +1125,7 @@ for tagname in ['span', 'p', 'h2', 'h3', 'h4', 'li']:
     # be a great idea, but we won't rewrite that part until we see trouble with
     # it.)
     if tagname != 'span':
-      removewhitespace(t)
+      stripwhitespace(t)
 
 # Remove empty paragraphs after 'block elements'
 if c_remove_empty_paragraphs_under_blocks:
@@ -1131,7 +1159,7 @@ rx_p_start = re.compile('^\<p(?:\s|\>)')
 # Checks if the array of elements is a list of button links.
 def isbuttonlinks(elements):
   buttonlink_found = False
-  # (Testing assumption:) all elements on this level must be 'a' tags.
+  # All elements on this level must be 'a' tags.
   for e in elements:
     if saferegexsearch(e, rxglobal_spacehmtl_only):
       continue
@@ -1140,16 +1168,16 @@ def isbuttonlinks(elements):
     href = e.get('href')
     if not href:
       return False
-    if href.endswith('index.htm') or  href.endswith('nieuw.htm'):
-      # This is not always the first buttonn (that may be a 'previous' link
+    # Usually there's a link to the index page but not always.
+    # The 'nieuw' is a hack for an index page containing buttons, but not to
+    # itself.
+    if href.endswith('index.htm') or href.endswith('nieuw.htm'):
+      # This is not always the first button (that may be a 'previous' link
       # with an arbitrary name) but if we encounter this, we assume these
       # are all button links.
       buttonlink_found = True
   return buttonlink_found
 
-# button links. Usually there's one to the index page but not always
-# the 'nieuw' is for the p-loog index page which doesn't
-#rx_buttonlink = re.compile('^\<a href=\"(?:[^\"]*\/)?(?:index|nieuw).htm\"')
 rx_titleimg = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
 
 # Remove button links from the page top.
@@ -1169,7 +1197,8 @@ while v >= 0:
   # Removing 'HTML whitespace' (like breaks/nbsp) has its effect on the actual
   # page; delete it anyway. I think we want to unify 'space at the start'.
   if saferegexsearch(r[i], rxglobal_spacehmtl_only):
-    r[i].extract()  ### This actually changes r. Then loop.
+    r[i].extract()
+    # r is now changed; loop (instead of increasing i).
   elif saferegexsearch(r[i], rx_p_start):
     if len(r[i].contents) == 0:
       # Extract empty paragraph at start ; that's just as "whitespace" as the above.
@@ -1200,7 +1229,7 @@ while v >= 0:
     v = -1 # other tag/NavigableString
 
 # Remove button links from the page bottom. Kind-of the same code but not fully.
-# NB: this is partly effectively removewhitespacefromend() - but intermixed with empty <p> tags too
+# NB: this is partly effectively stripwhitespacefromend() - but intermixed with empty <p> tags too
 if str(r[-1]) == '\n':
   # we want the last newline to remain there,
   # so the body tag will be on a line by itself
@@ -1212,7 +1241,7 @@ v = 3
 while v:
   if saferegexsearch(r[i], rxglobal_spacehmtl_only):
     r[i].extract()
-    #i = i - 1
+    # r is now changed; loop (instead of decreasing i).
   elif saferegexsearch(r[i], rx_p_start):
     if len(r[i].contents) == 0:
       r[i].extract()
