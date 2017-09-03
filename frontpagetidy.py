@@ -75,6 +75,22 @@ c_remove_empty_paragraphs_under_blocks = True
 #  c_remove_styles['*']['line-height'].append('15.1pt')
 #  c_remove_styles['*']['font-size'] = ['12pt', '3']
 
+# About whitespace-ish stuff in the HTML document: there are different kinds:
+# - <br>s. These are generally kept because they influence the output, but:
+#   - A single <br> at the end of a block-level tag makes no difference and we
+#     would like to remove those if possible (because a bit ugly/confusing).
+#   - Two consecutive <br>s in a paragraph should be converted into two separate
+#     paragraphs.
+# - Regular spaces. Policy:
+#   - Remove them at the end of block-level tags / <p>; they don't do anything.
+#   - Also from the beginning. (A single start of a <p> does not show up in a
+#     rendered document.)
+#   - Further remove duplicate spaces (within most tags? not <pre>). Actually
+#     this is not just 'within tags' but also if there is one space just outside
+#     an 'inline' tag and one just inside, these should ideally be deduplicated.
+#     - A way to do this is to move spaces at the start/end of an inline tag's
+#       contents to just outside, and then de-duplicate.
+
 ### THESE REGEXES ARE REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
 #
 # Regexes containing HTML tags. These can be used for matching:
@@ -96,7 +112,10 @@ rxglobal_spaces_only = re.compile('^\s+$')
 rxglobal_spaces_at_start = re.compile('^\s+')
 rxglobal_spaces_at_end = re.compile('\s+$')
 rxglobal_nbspace_only = re.compile('^(?:\s|\&nbsp\;)+$')
-rxglobal_nbspace_at_end = re.compile('(?:\s|\&nbsp\;)+$')
+# We use the following for matching (and then modifying) the whitespace part,
+# in some places.
+rxglobal_nbspace_at_start = re.compile('^(\s|\&nbsp\;)+')
+rxglobal_nbspace_at_end = re.compile('(\s|\&nbsp\;)+$')
 rxglobal_newline = re.compile('\s*\n+\s*')
 # This one is only usable for matching, not replacement (because we match only
 # one non-whitespace character and do not 'select' it):
@@ -226,6 +245,134 @@ def stripwhitespacefromend(t):
     else:
       # Quit function.
       break
+
+# Move leading/trailing whitespace out of tag; remove tag if it's empty.
+#
+# This function's logic is suitable for inline tags only. We assume that all
+# kinds of whitespace may be moved outside inline tags, without this influencing
+# formatting of the output. This includes both newlines (influencing formatting
+# of the source HTML; we assume we never need newlines to stay just before
+# inline-end tags) and <br>s.
+#
+# We do not want to end up inserting whitespace at the very beginning/end of
+# an inline tag. That is: if our tag is e.g. at the very end of its parent,
+# we don't want to move whitespace out into it(s end) - but rather into a
+# further ancestor tag. (Otherwise the end result would depend on which tags
+# we process before others.) The second argument contains all the inline tag
+# names for doing the "never insert whitespace at the very beginning/end" check.
+def movewhitespacetoparent(tag, inline_tagnames = []):
+  r = tag.contents
+  # Remove tags containing nothing.
+  if len(r) == 0:
+    tag.extract()
+    return
+
+  # Move all-whitespace contents (including <br>) to before. This could change
+  # r, so loop.
+  while saferegexsearch(r[0], rxglobal_spacehmtl_only):
+    # Find destination tag, and possibly destination string, to move our
+    # whitespace to.
+    t = tag
+    while t.previousSibling == None and gettagname(t.parent) in inline_tagnames:
+      # Parent is inline and we'd be inserting whitespace at its start: continue
+      # to grandparent.
+      t = t.parent
+    dest_tag = t.parent
+    possible_dest = t.previousSibling
+
+    # Move full-whitespace string/tag to its destination.
+    if r[0].__class__.__name__ == 'Tag' or possible_dest.__class__.__name__ != 'NavigableString':
+      # Move tag or full NavigableString into destination tag, either after the
+      # previous sibling or (if that does not exist) at the start. (The insert()
+      # command will implicitly remove it from its old location.)
+      dest_index = getindexinparent(possible_dest) + 1 if possible_dest else 0
+      dest_tag.insert(dest_index, r[0])
+    else:
+      # Prepend to existing string.
+      possible_dest.replaceWith(str(possible_dest) + str(r[0]))
+      # Remove existing NavigableString.
+      r[0].extract()
+    if not r:
+      tag.extract()
+      return
+
+  # Move whitespace part at start of NavigableString to before tag.
+  m = saferegexsearch(r[0], rxglobal_nbspace_at_start)
+  if m:
+    # Find destination tag/string to move our whitespace to.
+    t = tag
+    while t.previousSibling == None and gettagname(t.parent) in inline_tagnames:
+      t = t.parent
+    dest_tag = t.parent
+    possible_dest = t.previousSibling
+
+    # Move whitespace string to its destination.
+    if possible_dest.__class__.__name__ != 'NavigableString':
+      # Insert new NavigableString into destination tag,either after the
+      # previous sibling or (if that does not exist) at the start.
+      e = NavigableString(m.group(1))
+      dest_index = getindexinparent(possible_dest) + 1 if possible_dest else 0
+      dest_tag.insert(dest_index, e)
+    else:
+      # Append to existing NavigableString.
+      possible_dest.replaceWith(str(possible_dest) + m.group(1))
+
+    # Remove whitespace from the existing NavigableString.
+    len_whitespace = len(m.group(1))
+    s = str(r[0])
+    r[0].replaceWith(s[len_whitespace : ])
+
+  # Move all-whitespace contents (including <br>) to after. This could change
+  # r, so loop. Because of above, we know r will never become empty here.
+  while saferegexsearch(r[-1], rxglobal_spacehmtl_only):
+    # Find destination tag, and possibly destination string, to move our
+    # whitespace to.
+    t = tag
+    while t.nextSibling == None and gettagname(t.parent) in inline_tagnames:
+      # Parent is inline and we'd be inserting whitespace at its end: continue
+      # to grandparent.
+      t = t.parent
+    dest_tag = t.parent
+    possible_dest = t.nextSibling
+
+    # Move full-whitespace string/tag to its destination.
+    if r[-1].__class__.__name__ == 'Tag' or possible_dest.__class__.__name__ != 'NavigableString':
+      # Move tag or full NavigableString into destination tag, either before the
+      # next sibling or (if that does not exist) at the end. (The insert()
+      # command will implicitly remove it from its old location.)
+      dest_index = getindexinparent(possible_dest) if possible_dest else len(dest_tag.contents)
+      dest_tag.insert(dest_index, r[-1])
+    else:
+      # Prepend to existing string.
+      possible_dest.replaceWith(str(r[-1]) + str(possible_dest))
+      # Remove existing NavigableString.
+      r[-1].extract()
+
+  # Move whitespace part at end of NavigableString to after tag.
+  m = saferegexsearch(r[-1], rxglobal_nbspace_at_end)
+  if m:
+    # Find destination tag/string to move our whitespace to.
+    t = tag
+    while t.nextSibling == None and gettagname(t.parent) in inline_tagnames:
+      t = t.parent
+    dest_tag = t.parent
+    possible_dest = t.nextSibling
+
+    # Move whitespace string to its destination.
+    if possible_dest.__class__.__name__ != 'NavigableString':
+      # Insert new NavigableString into destination tag, either before the next
+      # sibling or (if that does not exist) at the end.
+      e = NavigableString(m.group(1))
+      dest_index = getindexinparent(possible_dest) if possible_dest else len(dest_tag.contents)
+      dest_tag.insert(dest_index, e)
+    else:
+      # Prepend to existing NavigableString.
+      possible_dest.replaceWith(m.group(1) + str(possible_dest))
+
+    # Remove whitespace from the existing NavigableString.
+    len_whitespace = len(m.group(1))
+    s = str(r[-1])
+    r[-1].replaceWith(s[ : -len_whitespace])
 
 # Remove newlines + superfluous markup spacing from tags.
 #
@@ -860,15 +1007,14 @@ for t in soup.findAll('i'):
   movecontentsinside(t, e)
   t.extract()
 
-# Remove stupid MSFT 'o:p' tags. Apparently it is best for the document flow,
-# if we get rid of some markup whitespace (not &nbsp) inside these tags too...
+# Remove strange MSFT 'o:p' tags.
 #
-# NOTE: this old comment does not seem true anymore since we're also removing
-# &nbsp;? Fix later if needed.
+# We have no idea what they are useful for; they're sometimes inserted in random
+# places in the middle of a sentence inside a span, don't always have end tags.
+# Let's get rid of them and dedupe any spacing later.
 for t in soup.findAll('o:p'):
-  stripwhitespace(t)
-  r2 = t.contents
-  if len(r2):
+  r = t.contents
+  if len(r):
     movecontentsbefore(t, t)
   t.extract()
 
@@ -1013,24 +1159,20 @@ for t in r:
 #      movecontentsbefore(ee, ee)
 #      ee.extract()
 
-# Remove inline tags that only contain whitespace.
+# Move leading/trailing whitespace out of inline tags into parents; remove empty
+# tags.
 #
-# Do not remove the contents. Move the contents outside; remove the tags.
-# This could be useful to do before mangletag() stuff, because
-# - We don't have to deal with attributes inside these empty tags; they will
-#   just be removed. (This is useful for font; others should not have attrs.)
-for tagname in ['strong', 'em', 'font']:
+# This could be useful to do before mangletag() stuff, because then we don't
+# have to deal with attributes inside these empty tags; they will just be
+# removed. We assume these inline tags don't contain attributes like 'id' which
+# must be preserved. (This is why we won't do 'div' and 'a' here. These could be
+# processed despite not being pure-inline tags, but only if they don't have an
+# 'id', and preferrably after mangletag(). But right now we won't; it seems too
+# much trouble for little/no gain.)
+inline_tags = ['strong', 'em', 'font', 'span'];
+for tagname in inline_tags:
   for t in soup.findAll(tagname):
-    # The number of 'contents' may be more than one, to account for e.g.
-    # standalone \n at start/end.
-    ok = 1
-    for e in t.contents:
-      if not(saferegexsearch(e, rxglobal_spacehmtl_only)):
-        ok = 0
-        break
-    if ok:
-      movecontentsbefore(t, t)
-      t.extract()
+    movewhitespacetoparent(t, inline_tags)
 
 # Check if we can get rid of some 'inline' (not 'positioning') tags if we move
 # their attributes to a child/parent; also normalize their attributes. <font>
