@@ -90,6 +90,45 @@ c_remove_empty_paragraphs_under_blocks = True
 #     an 'inline' tag and one just inside, these should ideally be deduplicated.
 #     - A way to do this is to move spaces at the start/end of an inline tag's
 #       contents to just outside, and then de-duplicate.
+# - Non-breaking spaces. Policy: dedupe _single_ non-breaking spaces which are
+#   adjacent to regular spacing, just like the regular spacing (i.e. replace all
+#   by a single space or newline) - if they are not at the start of a rendered
+#   line. (See function startsrenderedline.)
+#   - This removal actually changes the rendered document: it influences the
+#     horizontal spacing between the borering elements. So maybe we don't always
+#     want to do that / this should be reflected in a constant. But example MSFP
+#     documents show that apparently non-breaking spaces are often inserted
+#     accidentally, and therefore are better removed.
+#   - We do not want to dedupe multiple &nbsp;s; we assume those are always
+#     inserted on purpose.
+#   - We do not want to replace standalone &nbsp;s; (surrounded by non-spaces or
+#     inline tags on both sides) by normal spaces; that influences the breaking
+#     of lines and we won't mess with that / will assume those are always
+#     inserted on purpose.
+#   We also do not want to remove them from the start of non-inline tags because
+#   they make a difference there (which we assume to be intended because that's
+#   visible to a Frontpage document editor); we do remove them from the end of
+#   non-inline tags and just before <br>s (just like other spaces).See
+#   'generally' below for inline tags.
+c_dedupe_nbsp = True
+# - Newlines. These have the same function as a single space in the output; they
+#   are only there for formatting the HTML. Our policy:
+#   - Make no assumptions about whether the HTML has any formatting. (Though we
+#     know it does; most documents we've seen have plenty of newlines, even
+#     empty lines.)
+#   - Keep newlines after the end of block-level elements, <p> and <br>.
+#   - Remove newlines from inline elements and within <p> which are not preceded
+#     by <br>. (This is slightly contentious as it could remove some nice
+#     formatting, however since we are shortening a lot of lines by removing
+#     unnecessary style tags from a.o.<p>, it also looks strange if we keep the
+#     newlines there.)
+# Generally, for any of the 4 kinds of whitespace,
+# - We will not leave leading/trailing whitespace inside inline tags but move
+#   them just outside (for unification of the document and ease of coding some
+#   logic that runs after we've done this; it does not make visible difference).
+# - We will strip trailing whitespace (except newlines) at the end of non-inline
+#   tags and just before <br>. They don't make a visible difference but are
+#   unnecessary cruft.
 
 ### THESE REGEXES ARE REFERENCED AS A 'GLOBAL' INSIDE FUNCTIONS
 #
@@ -108,19 +147,28 @@ rxglobal_spacehmtl_only = re.compile('^(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
 # explicitly want to 'fix' that for spaces at start/end of tag contents.
 #
 # To remember: NavigableStrings include newlines, and \s matches newlines.
-rxglobal_spaces_only = re.compile('^\s+$')
-rxglobal_spaces_at_end = re.compile('\s+$')
+#
+# We use the fillowing for stripping whitespace (re.sub()) in some places but
+# that does not need brackets.
+rxglobal_newline = re.compile('\s*\n+\s*')
 rxglobal_nbspace_only = re.compile('^(?:\s|\&nbsp\;)+$')
 # We use the following for matching (and then modifying) the whitespace part,
-# in some places, so use brackets.
+# in a way that needs to access the matches in some places, so use brackets.
 rxglobal_nbspace_at_start = re.compile('^((?:\s|\&nbsp\;)+)')
 rxglobal_nbspace_at_end = re.compile('((?:\s|\&nbsp\;)+)$')
 rxglobal_spaces_at_start = re.compile('^(\s+)')
-rxglobal_newline = re.compile('\s*\n+\s*')
-# This one is only usable for matching, not replacement (because we match only
-# one non-whitespace character and do not 'select' it):
-rxglobal_newline_at_end = re.compile('\S\n$')
-
+rxglobal_multispace = re.compile('(\s{2,})')
+rxglobal_multispace_at_start = re.compile('^(\s{2,})')
+# Matches only a single consecutive &nbsp. (For this, the negative lookbehind
+# assertion needs to contain only one character because anything else ending in
+# ';' is not whitespace either.)
+rxglobal_multinbspace = re.compile('((?:\s|(?<!\;)\&nbsp\;(?!\&nbsp\;)){2,})')
+rxglobal_multinbspace_at_start = re.compile('^((?:\s|(?<!\;)\&nbsp\;(?!\&nbsp\;)){2,})')
+# The first negative lookbehind assertion for "not at the start of the string",
+# (which amounts to explicitly matching a non-space character which is not the
+# ; in &nbsp;,) is unfortunate. Because now, for doing re.sub(), we need to
+# explicitly put \1 back into the replacement string.
+rxglobal_multinbspace_not_at_start = re.compile('(\S)(?<!\&nbsp\;)((?:\s|(?<!\;)\&nbsp\;(?!\&nbsp\;)){2,})')
 
 ###
 ### Functions 1/3: helper functions which are pretty much general
@@ -215,6 +263,84 @@ def getcontents(tag, contents_type):
     return tag.findAll(recursive=False)
   # Default, though we're probably not going to call the function for this:
   return tag.contents
+
+# Determines if an element is on the beginning of a rendered line.
+#
+# This function assumes that all existing inline tags have non-whitespace
+# contents and all non-inline elements take up the full vertical space for
+# themselves (i.e. they start at a new line, and the content directly after them
+# does too).
+def startsrenderedline(element, inline_tagnames = []):
+  # If a previous element exists within the same parent, assume we're at the
+  # start of a line if the element is non-inline, and we're not at the start
+  # if the element is inline. (See assumption above.)
+  previous = element.previousSibling
+  while previous == None:
+    # If we're at the start of an inline tag, keep looking outside that tag.
+    # If we're at the start of another tag, assume we're at the start of a line.
+    if not (gettagname(element.parent) in inline_tagnames):
+      at_line_start = True
+      break
+    # We also assume we will never get here with the very first element in the
+    # document (because there's always a <head> which breaks this loop).
+    element = element.parent
+    previous = element.previousSibling
+
+  if previous != None:
+    n = gettagname(previous)
+    at_line_start = not(n == '' or n in inline_tagnames)
+  return at_line_start
+
+# De-duplicate whitespace in NavigableString.
+#
+# Later adjacent NavigableStrings get merged into the provided one if possible.
+# We determine if the string always gets rendered at the start of a line, and
+# adjust for this in the de-duplication of non-breaking whitespace & the
+# keeping of a newline as the deduped string.
+def dedupewhitespace(navstr, inline_tagnames = ['strong', 'em', 'font', 'span', 'a']):
+  at_line_start = startsrenderedline(navstr, inline_tags)
+  s = str(navstr)
+  # Merge consecutive strings.
+  nexttag = navstr.nextSibling
+  while nexttag != None and r[i + 1].__class__.__name__ == 'NavigableString':
+    s += str(nexttag)
+    nexttag.extract()
+    nexttag = navstr.nextSibling
+
+  # Dedupe spaces at start of our string.
+  # - Replace single &nbsp;s too, unless our constant says not to OR our string
+  #   is at the start of a rendered line.
+  # - Replace _by_ single space, unless the string includes a newline and is at
+  #   the start of a rendered line.
+  rx = rxglobal_multinbspace_at_start if c_dedupe_nbsp and not at_line_start else rxglobal_multispace_at_start
+  m =  rx.search(s)
+  if m:
+    replacement = '\n' if m.group(1).find('\n') != -1 and at_line_start else ' '
+    # This sub() does not need restrictions because we know it replaces maximum
+    # one occurrence.
+    s = rx.sub(replacement, s)
+
+  # Dedupe spaces elsewhere in our string. Since we won't touch the very start
+  # of our string anymore, the replacement is never '\n'.
+  if c_dedupe_nbsp and at_line_start:
+    # We want to deduplicate &nbsp;s too, but not those wich occur in whitespace
+    # at the very start of our string. (We just explicitly prevented replacing
+    # those, above.) We have a special regex for this. We should be able to
+    # just replace all occurrences with one command (like in the 'else' below)
+    # but \1 does not seem to work as replacement? So loop and replace one by
+    # one.
+    m = saferegexsearch(s, rxglobal_multinbspace_not_at_start)
+    while m:
+      s = rxglobal_multinbspace_not_at_start.sub(m.group(1) + ' ', s, 1)
+      m = saferegexsearch(s, rxglobal_multinbspace_not_at_start)
+  else:
+    # Deduplicate single &nbsp;s too, unless our constant says not to OR we've
+    # already just done it.
+    rx = rxglobal_multinbspace if c_dedupe_nbsp else rxglobal_multispace
+    s = rx.sub(' ', s)
+
+  if s != str(navstr):
+    navstr.replaceWith(s)
 
 # Remove whitespace from start / end of a tag's contents.
 #
@@ -1237,7 +1363,7 @@ for t in r:
 #      movecontentsbefore(ee, ee)
 #      ee.extract()
 
-inline_tags = ['strong', 'em', 'font', 'span'];
+inline_tags = ['strong', 'em', 'font', 'span', 'a'];
 
 # Move leading/trailing whitespace out of inline tags into parents; remove empty
 # tags.
@@ -1249,7 +1375,7 @@ inline_tags = ['strong', 'em', 'font', 'span'];
 # processed despite not being pure-inline tags, but only if they don't have an
 # 'id', and preferrably after mangletag(). But right now we won't; it seems too
 # much trouble for little/no gain.)
-for tagname in inline_tags:
+for tagname in set(inline_tags).difference(['a']):
   for t in soup.findAll(tagname):
     movewhitespacetoparent(t, inline_tags)
 
@@ -1276,6 +1402,29 @@ for tagname in ['p', 'h2', 'h3', 'h4']:
   for t in soup.findAll(tagname):
     mangleattributes(t)
 
+# Now that spacing is moved to where it should be and unnecessary tags are gone:
+
+# Remove duplicate spacing and unnecessary newlines.
+#
+# This implies first concatenating any adjacent NavigableStrings (which can
+# occur since we've extract()ed tags).
+#
+# Remove newlines except if the string is at the start of a rendered line. (This
+# includes newlines inside <p>s; see newline policy. Also we've seen e.g. h2
+# tags with two newlines in the middle of the title so we explicitly want to do
+# those.) We won't recurse into child tags; we don't dare to assume that no tags
+# will have problems with whitespace removal - e.g. <pre>.)
+for tagname in inline_tags + ['p', 'h2', 'h3', 'h4', 'li']:
+  for t in soup.findAll(tagname):
+    r = t.contents
+    i = 0
+    while i < len(r):
+      # Skip to next string.
+      if r[i].__class__.__name__ == 'NavigableString':
+        # This may shorten r, but does not extract r[i].
+        dedupewhitespace(r[i], inline_tags)
+      i += 1
+
 # Remove whitespace just before <br>.
 # Strictly we only need to move 'HTML whitespace' (&nbsp;), but that may be
 # followed by a separate NavigableString holding only '\n'.
@@ -1291,6 +1440,17 @@ for t in soup.findAll('br'):
     else:
       e.replaceWith(s)
     e = ee
+
+# Remove whitespace at start/end of non-inline tags too, to achieve better
+# markup.
+#
+# This does not make a difference for rendering, but we've often seen useless
+# &nbsp;s at the end of lines (li/p) which are just ugly. We just do the rest
+# too because why not.
+for tagname in ['p', 'h2', 'h3', 'h4', 'li', 'div']:
+  for t in soup.findAll(tagname):
+    stripnoninlinewhitespace(t)
+stripnoninlinewhitespace(soup.body)
 
 # When inside a paragraph, replace (exactly) two consecutive <br>s by a
 # paragraph ending + start.
@@ -1321,33 +1481,6 @@ for t in soup.findAll('br'):
             movecontentsinside(pe, e, 0, getindexinparent(t2) + 1)
             t2.extract()
             t.extract()
-
-# Now that spacing/<br>s are moved to where they should be:
-
-# Remove newlines in the tags which are supposed to have 'simple' contents,
-# except just after <br>s. (This includes <p>s; see newline policy. Also we've
-# seen e.g. h2 tags with two newlines in the middle of the title. We won't
-# recurse into child tags; we don't dare to assume that no tags will have
-# problems with whitespace removal - e.g. <pre>.)
-for tagname in inline_tags + ['p', 'h2', 'h3', 'h4', 'li', 'a']:
-  for t in soup.findAll(tagname):
-    for e in t.contents:
-      if e.__class__.__name__ == 'NavigableString' and saferegexsearch(e, rxglobal_newline):
-        s = rxglobal_newline.sub(' ', str(e))
-        e.replaceWith(s)
-
-#TODO dedupe spacing. Before removing them below, so we know we've removed nbspace if that's unwanted.
-
-# Remove whitespace at start/end of 'position' tags too, to achieve better
-# markup.
-#
-# This does not make a difference for rendering, but we've often seen useless
-# &nbsp;s at the end of lines (li/p) which are just ugly. We just do the rest
-# too because why not.
-for tagname in ['p', 'h2', 'h3', 'h4', 'li', 'div']:
-  for t in soup.findAll(tagname):
-    stripnoninlinewhitespace(t)
-stripnoninlinewhitespace(soup.body)
 
 # Remove empty paragraphs after 'block elements'.
 if c_remove_empty_paragraphs_under_blocks:
