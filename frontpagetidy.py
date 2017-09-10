@@ -1237,6 +1237,8 @@ for t in r:
 #      movecontentsbefore(ee, ee)
 #      ee.extract()
 
+inline_tags = ['strong', 'em', 'font', 'span'];
+
 # Move leading/trailing whitespace out of inline tags into parents; remove empty
 # tags.
 #
@@ -1247,7 +1249,6 @@ for t in r:
 # processed despite not being pure-inline tags, but only if they don't have an
 # 'id', and preferrably after mangletag(). But right now we won't; it seems too
 # much trouble for little/no gain.)
-inline_tags = ['strong', 'em', 'font', 'span'];
 for tagname in inline_tags:
   for t in soup.findAll(tagname):
     movewhitespacetoparent(t, inline_tags)
