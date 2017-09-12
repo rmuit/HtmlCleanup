@@ -502,11 +502,12 @@ def stripnoninlinewhitespace(tag):
 # further ancestor tag. (Otherwise the end result would depend on which tags
 # we process before others.) The second argument contains all the inline tag
 # names for doing the "never insert whitespace at the very beginning/end" check.
-def movewhitespacetoparent(tag, inline_tagnames = []):
+def movewhitespacetoparent(tag, remove_if_empty = True, inline_tagnames = []):
   r = tag.contents
   # Remove tags containing nothing.
   if len(r) == 0:
-    tag.extract()
+    if remove_if_empty:
+      tag.extract()
     return
 
   # Move all-whitespace contents (including <br>) to before. This could change
@@ -535,7 +536,8 @@ def movewhitespacetoparent(tag, inline_tagnames = []):
       # Remove existing NavigableString.
       r[0].extract()
     if not r:
-      tag.extract()
+      if remove_if_empty:
+        tag.extract()
       return
 
   # Move whitespace part at start of NavigableString to before tag.
@@ -1402,9 +1404,9 @@ inline_tags = ['strong', 'em', 'font', 'span', 'a'];
 # processed despite not being pure-inline tags, but only if they don't have an
 # 'id', and preferrably after mangletag(). But right now we won't; it seems too
 # much trouble for little/no gain.)
-for tagname in set(inline_tags).difference(['a']):
+for tagname in inline_tags:
   for t in soup.findAll(tagname):
-    movewhitespacetoparent(t, inline_tags)
+    movewhitespacetoparent(t, tagname != 'a', inline_tags)
 
 # Check if we can get rid of some 'inline' (not 'positioning') tags if we move
 # their attributes to a child/parent; also normalize their attributes. <font>
