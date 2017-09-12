@@ -342,6 +342,116 @@ def dedupewhitespace(navstr, inline_tagnames = ['strong', 'em', 'font', 'span', 
   if s != str(navstr):
     navstr.replaceWith(s)
 
+# Strip whitespace from the start of a NavigableString.
+#
+# If the whole string is whitespace (also if that is non-breaking), then
+# remove the NavigableString and repeat the stripping if the next sibling
+# is also a NavigableString. Stop if any tag is encountered (including <br>).
+#
+# <br> and &nbsp; have effect at the start of a string so do not remove them; do
+# not look behind &nbsp;, because
+# - a single space after &nbsp; does have effect so it should not be stripped;
+# - there is other code to dedupe spaces. We strip but don't dedupe.
+#
+# If newlines are found, keep one at most.
+def stripleadingwhitespace(navstr):
+  readd_newline = False
+  m = saferegexsearch(navstr, rxglobal_spaces_at_start)
+  while m:
+    replacement = '' if navstr.find('\n') == -1 else '\n'
+    if m.group(1) == str(navstr):
+      # NavigableString contains only whitespace, fully being removed. We need
+      # to loop back and check again. Also, if we encountered a newline then add
+      # at most one back at the start.
+      nxt = navstr.nextSibling
+      navstr.extract()
+      navstr = nxt
+      if len(replacement):
+        readd_newline = True
+      m = None
+      if navstr != None and navstr.__class__.__name__ == 'NavigableString':
+        m = saferegexsearch(navstr, rxglobal_spaces_at_start)
+    elif replacement != m.group(1):
+      # String is only part whitespace: strip/replace it and be done.
+      # Handle the adding-of-newlines here.
+      if readd_newline:
+        replacement = '\n'
+      # If replacement is already '\n', don't add an extra one.
+      if len(replacement):
+        readd_newline = False
+      s = str(navstr)
+      navstr.replaceWith(replacement + s[ len(m.group(1)) : ])
+      m = None
+    else:
+      # replacement == '\n' and navstr starts with a single newline followed by
+      # a non-space. (Because replacement == '' will always be matched by the
+      # 'elif'.) Don't loop, and don't bother checking about the \n.
+      m = None
+      readd_newline = False
+  if readd_newline:
+    # As noted: re-add newline unless NavigableString starts with newline.
+    # (Actually 'starts with newline' can never be true here, but w/e.)
+    if navstr == None:
+      e = NavigableString('\n')
+      navstr.parent.insert(0, e)
+    elif navstr.__class__.__name__== 'Tag':
+      e = NavigableString('\n')
+      navstr.parent.insert(getindexinparent(navstr), e)
+    else:
+      navstr.replaceWith('\n' + str(navstr))
+
+# Strip whitespace from the end of a NavigableString.
+#
+# If the whole string is whitespace (also if that is non-breaking), then
+# remove the NavigableString and repeat the stripping if the previous sibling
+# is also a NavigableString. Stop if any tag is encountered (including <br>).
+#
+# If readd_newline is True, then add at most one newline back to the end of the
+# stripped element
+def striptrailingwhitespace(navstr, readd_newline = False):
+  m = saferegexsearch(navstr, rxglobal_nbspace_at_end)
+  while m:
+    replacement = '' if navstr.find('\n') == -1 else '\n'
+    if m.group(1) == str(navstr):
+      # NavigableString contains only whitespace, fully being removed. We need
+      # to loop back and check again. Also, if we encountered a newline then add
+      # at most one back at the end.
+      prev = navstr.previousSibling
+      navstr.extract()
+      navstr = prev
+      if len(replacement):
+        readd_newline = True
+      m = None
+      if navstr != None and navstr.__class__.__name__ == 'NavigableString':
+        m = saferegexsearch(navstr, rxglobal_nbspace_at_end)
+    elif replacement != m.group(1):
+      # String is only part whitespace: strip/replace it and be done.
+      # Handle the adding-of-newlines here.
+      if readd_newline:
+        replacement = '\n'
+      # If replacement is already '\n', don't add an extra one.
+      if len(replacement):
+        readd_newline = False
+      s = str(navstr)
+      navstr.replaceWith(s[ : -len(m.group(1))] + replacement)
+      m = None
+    else:
+      # replacement == '\n' and navstr ends with a non-space followed by a
+      # single newline. (Because replacement == '' will always be matched by the
+      # 'elif'.) Don't loop, and don't bother checking about the \n.
+      m = None
+      readd_newline = False
+  if readd_newline and navstr != None:
+    # As noted: re-add newline unless NavigableString ends in newline. (And
+    # unless tag contents are now empty.)
+    if navstr.__class__.__name__== 'Tag':
+      e = NavigableString('\n')
+      navstr.parent.insert(getindexinparent(navstr) + 1, e)
+    else:
+      s = str(navstr)
+      if s[-1] != '\n':
+        navstr.replaceWith(s + '\n')
+
 # Remove whitespace from start / end of a tag's contents.
 #
 # This should not be done for inline tags. It assumes:
@@ -371,97 +481,14 @@ def stripnoninlinewhitespace(tag):
       r[-1].extract()
       r[-1].extract()
     # Now strip (more) spaces from the end of the last NavigableString(s), but
-    # no (more) <br>.
-    m = saferegexsearch(r[-1], rxglobal_nbspace_at_end)
-    while m:
-      replacement = '' if r[-1].find('\n') == -1 else '\n'
-      if len(r[-1]) == len(m.group(1)):
-        # NavigableString contains only whitespace, fully being removed. We need
-        # to loop back and check again. Also, if we encountered newline then add
-        # at most one back at the end.
-        r[-1].extract()
-        if len(replacement):
-          readd_newline = True
-        m = None
-        if len(r):
-          m = saferegexsearch(r[-1], rxglobal_nbspace_at_end)
-      elif replacement != m.group(1):
-        # String is only part whitespace: strip/replace it and be done.
-        # Handle the adding-of-newlines here.
-        if readd_newline:
-          replacement = '\n'
-        # If replacement is already '\n', don't add an extra one.
-        if len(replacement):
-          readd_newline = False
-        s = str(r[-1])
-        r[-1].replaceWith(s[ : -len(m.group(1))] + replacement)
-        m = None
-      else:
-        # replacement == '\n' and r[-1] ends with a non-space followed by a
-        # single newline. (Because replacement == '' will always be matched
-        # by the 'elif'.) Don't loop, and don't bother checking about the \n
-        m = None
-        readd_newline = False
-    if len(r) and readd_newline:
-      # As noted: re-add newline unless NavigableString ends in newline. (And
-      # unless tag contents are now empty.)
-      if r[-1].__class__.__name__== 'Tag':
-        e = NavigableString('\n')
-        tag.insert(len(r), e)
-      else:
-        s = str(r[-1])
-        if s[-1] != '\n':
-          r[-1].replaceWith(s + '\n')
-
+    # no (more) <br>. (If the tag is now totally empty, don't readd newline.)
     if len(r):
-      # Strip whitespace from start. Assume there can be multiple
-      # NavigableStrings at the start of the tag. <br> and &nbsp; have effect
-      # at the start of a string so do not remove them; do not even look behind
-      # them, because
-      # - a space after &nbsp; does have effect so it should not be stripped;
-      # - other code will look at spaces after <br>.
-      # If newlines are found, keep one at most.
-      readd_newline = False
-      m = saferegexsearch(r[0], rxglobal_spaces_at_start)
-      while m:
-        replacement = '' if r[0].find('\n') == -1 else '\n'
-        if len(r[0]) == len(m.group(1)):
-          # NavigableString contains only whitespace, fully being removed. We
-          # need to loop back and check again. Also, if we encountered newline
-          # then add at most one back at the end.
-          r[0].extract()
-          if len(replacement):
-            readd_newline = True
-          m = None
-          if len(r):
-            m = saferegexsearch(r[0], rxglobal_spaces_at_start)
-        elif replacement != m.group(1):
-          # String is only part whitespace: strip/replace it and be done.
-          # Handle the adding-of-newlines here.
-          if readd_newline:
-            replacement = '\n'
-          # If replacement is already '\n', don't add an extra one.
-          if len(replacement):
-            readd_newline = False
-          s = str(r[0])
-          r[0].replaceWith(replacement + s[ len(m.group(1)) : ])
-          m = None
-        else:
-          # replacement == '\n' and r[0] starts with a single newline followed
-          # by a non-space. (Because replacement == '' will always be matched
-          # by the 'elif'.) Don't loop, and don't bother checking about the \n
-          m = None
-          readd_newline = False
-      if readd_newline:
-        # As noted: re-add newline unless NavigableString starts with newline.
-        # (Actually 'starts with newline' can never be true here, but w/e.)
-        if r[0].__class__.__name__== 'Tag':
-          e = NavigableString('\n')
-          tag.insert(0, e)
-        else:
-          r[0].replaceWith('\n' + str(r[0]))
+      striptrailingwhitespace(r[-1], readd_newline)
+      # Also strip from the start.
+      if len(r):
+        stripleadingwhitespace(r[0])
 
-# Move leading/trailing whitespace out of tag; remove tag if it's empty.
+# Move leading/trailing whitespace out of tag; optionally remove empty tag.
 #
 # This function's logic is suitable for inline tags only. We assume that all
 # kinds of whitespace may be moved outside inline tags, without this influencing
@@ -1425,62 +1452,90 @@ for tagname in inline_tags + ['p', 'h2', 'h3', 'h4', 'li']:
         dedupewhitespace(r[i], inline_tags)
       i += 1
 
-# Remove whitespace just before <br>.
-# Strictly we only need to move 'HTML whitespace' (&nbsp;), but that may be
-# followed by a separate NavigableString holding only '\n'.
-for t in soup.findAll('br'):
-  e = t.previousSibling
-  while e != None and saferegexsearch(e, rxglobal_nbspace_at_end):
-    # already store 'previous previous', so we can safely extract it
-    # (also works around us not knowing whether extract() will actually get rid of a '\n')
-    ee = e.previousSibling
-    s = rxglobal_nbspace_at_end.sub('', e)
-    if s == '':
-      e.extract()
-    else:
-      e.replaceWith(s)
-    e = ee
-
-# Remove whitespace at start/end of non-inline tags too, to achieve better
-# markup.
+# Remove unnecessary whitespace at start/end of non-inline tags.
 #
-# This does not make a difference for rendering, but we've often seen useless
-# &nbsp;s at the end of lines (li/p) which are just ugly. We just do the rest
-# too because why not.
+# This does not make a difference for rendering; it just makes for neater HTML.
+# (We've often seen useless &nbsp;s at the end of lines (li/p) which are just
+# ugly. We just do the rest too because why not.)
 for tagname in ['p', 'h2', 'h3', 'h4', 'li', 'div']:
   for t in soup.findAll(tagname):
     stripnoninlinewhitespace(t)
 stripnoninlinewhitespace(soup.body)
 
+# In the same vein, remove unnecessary whitespace just before and after <br>s.
+#
+# This is partly duplicate because most NavigableStrings around <br> have
+# been processed by the previous code block. This also does <br>s that are
+# not inside (the first level of) the tags specified just above.
+for t in soup.findAll('br'):
+  e = t.previousSibling
+  if e != None and e.__class__.__name__ == 'NavigableString':
+    striptrailingwhitespace(e)
+  e = t.nextSibling
+  if e != None and e.__class__.__name__ == 'NavigableString':
+    stripleadingwhitespace(e)
+
 # When inside a paragraph, replace (exactly) two consecutive <br>s by a
 # paragraph ending + start.
-for t in soup.findAll('br'):
-  # Thanks to previous, newlines before brs have gone so we can just do nextSibling.
-  t2 = t.nextSibling
-  if t2.__repr__() == '<br />':
-    e = t.previousSibling
-    if e.__repr__() != '<br />':
-      e = t2.nextSibling
-      if e.__repr__() != '<br />':
-        pe = t.parent
+#
+# (This is also 'unifying HTML' so more like 'Soup part 1', but we prefer doing
+# this after movewhitespacetoparent() and mangletag() calls. Also: see next
+# comment.)
+for br in soup.findAll('br'):
+  # Thanks to the previous code blocks, the only pure whitespace that can be
+  # right before/after a <br> is a newline. Check if previous is not a <br>...
+  lf = None
+  e = br.previousSibling
+  if e != None and e.__class__.__name__ == 'NavigableString' and str(e) == '\n':
+    e = e.previousSibling
+  if e != None and e.__class__.__name__ == 'Tag' and gettagname(e) != 'br':
+    # ...and the next is a <br>...
+    nxt = br.nextSibling
+    if nxt != None and nxt.__class__.__name__ == 'NavigableString' and str(nxt) == '\n':
+      lf = nxt
+      nxt = nxt.nextSibling
+    if nxt != None and nxt.__class__.__name__ == 'Tag' and gettagname(nxt) == 'br':
+      # ...and the one after that is not a <br>...
+      e = nxt.nextSibling
+      if e != None and e.__class__.__name__ == 'NavigableString' and str(e) == '\n':
+        e = e.nextSibling
+      if e != None and e.__class__.__name__ == 'Tag' and gettagname(e) != 'br':
+        # ...and the parent is a <p>: (Note we only replace if <p> is a direct
+        # parent. A double <br> inside an inline tag like <em> is semantically
+        # almost the same, but it's too much work to then also close and reopen
+        # the inline tags.)
+        pe = br.parent
         if gettagname(pe) == 'p':
           # We have exactly two <br>s, inside a <p>.
           # Move contents after t2 to a new paragraph.
-          e = t2.nextSibling
+          e = nxt.nextSibling
           if e == None:
             # The two br's were at the end of a paragraph. Weirdness.
             # Move them outside (just after) the paragraph.
-            pe.parent.insert(getindexinparent(pe) + 1, t2)
-            pe.parent.insert(getindexinparent(pe) + 1, t)
+            pe.parent.insert(getindexinparent(pe) + 1, nxt)
+            if lf != None:
+              pe.parent.insert(getindexinparent(pe) + 1, lf)
+            pe.parent.insert(getindexinparent(pe) + 1, br)
           else:
+            # Insert a newline and a new paragraph just after our paragraph.
+            # (We always insert one newline, regardless whether the <br>s are
+            # followed by newlines.)
             i = getindexinparent(pe) + 1
+            p2 = Tag(soup, 'p')
+            pe.parent.insert(i, p2)
             e = NavigableString('\n')
-            pe.parent.insert(i,e)
-            e = Tag(soup, 'p')
-            pe.parent.insert(i + 1, e)
-            movecontentsinside(pe, e, 0, getindexinparent(t2) + 1)
-            t2.extract()
-            t.extract()
+            pe.parent.insert(i ,e)
+            # Move all content after the second <br> into the new paragraph,
+            # after removing a newline if that follows the second <br>.
+            e = nxt.nextSibling
+            if e != None and e.__class__.__name__ == 'NavigableString' and str(e) == '\n':
+              e.extract()
+            movecontentsinside(pe, p2, 0, getindexinparent(nxt) + 1)
+            # Remove the <br>s and the newline between them (if any)
+            nxt.extract()
+            br.extract()
+            if lf != None:
+              lf.extract()
 
 # Remove empty paragraphs after 'block elements'.
 if c_remove_empty_paragraphs_under_blocks:
