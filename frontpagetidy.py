@@ -353,12 +353,17 @@ def dedupewhitespace(navstr, inline_tagnames = ['strong', 'em', 'font', 'span', 
 # - a single space after &nbsp; does have effect so it should not be stripped;
 # - there is other code to dedupe spaces. We strip but don't dedupe.
 #
-# If newlines are found, keep one at most.
-def stripleadingwhitespace(navstr):
-  readd_newline = False
+# If newlines are found, keep one at most, but:
+# - If including_newline == True, never keep a newline. (Always strip it.)
+# - If including_newline == False, always add a newline at the start even if
+#   there was none in the beginning.
+def stripleadingwhitespace(navstr, including_newline = None):
+  force_strip_newline = including_newline == True
+  readd_newline = including_newline == False
   m = saferegexsearch(navstr, rxglobal_spaces_at_start)
   while m:
-    replacement = '' if navstr.find('\n') == -1 else '\n'
+    replacement = '' if force_strip_newline or navstr.find('\n') == -1 else '\n'
+    force_strip_newline = False
     if m.group(1) == str(navstr):
       # NavigableString contains only whitespace, fully being removed. We need
       # to loop back and check again. Also, if we encountered a newline then add
@@ -388,9 +393,8 @@ def stripleadingwhitespace(navstr):
       # 'elif'.) Don't loop, and don't bother checking about the \n.
       m = None
       readd_newline = False
-  if readd_newline:
-    # As noted: re-add newline unless NavigableString starts with newline.
-    # (Actually 'starts with newline' can never be true here, but w/e.)
+  if readd_newline and including_newline != True:
+    # As noted: re-add newline.
     if navstr == None:
       e = NavigableString('\n')
       navstr.parent.insert(0, e)
@@ -406,12 +410,17 @@ def stripleadingwhitespace(navstr):
 # remove the NavigableString and repeat the stripping if the previous sibling
 # is also a NavigableString. Stop if any tag is encountered (including <br>).
 #
-# If readd_newline is True, then add at most one newline back to the end of the
-# stripped element
-def striptrailingwhitespace(navstr, readd_newline = False):
+# If newlines are found, keep one at most, but:
+# - If including_newline == True, never keep a newline. (Always strip it.)
+# - If including_newline == False, always add a newline at the end even if
+#   there was none in the beginning.
+def striptrailingwhitespace(navstr, including_newline = None):
+  force_strip_newline = including_newline == True
+  readd_newline = including_newline == False
   m = saferegexsearch(navstr, rxglobal_nbspace_at_end)
   while m:
-    replacement = '' if navstr.find('\n') == -1 else '\n'
+    replacement = '' if force_strip_newline or navstr.find('\n') == -1 else '\n'
+    force_strip_newline = False
     if m.group(1) == str(navstr):
       # NavigableString contains only whitespace, fully being removed. We need
       # to loop back and check again. Also, if we encountered a newline then add
@@ -441,7 +450,7 @@ def striptrailingwhitespace(navstr, readd_newline = False):
       # 'elif'.) Don't loop, and don't bother checking about the \n.
       m = None
       readd_newline = False
-  if readd_newline and navstr != None:
+  if readd_newline and including_newline != True and navstr != None:
     # As noted: re-add newline unless NavigableString ends in newline. (And
     # unless tag contents are now empty.)
     if navstr.__class__.__name__== 'Tag':
@@ -454,12 +463,17 @@ def striptrailingwhitespace(navstr, readd_newline = False):
 
 # Remove whitespace from start / end of a tag's contents.
 #
+# If newlines are found, keep one at most, but:
+# - If including_newline == True, never keep newlines. (Always strip them.)
+# - If including_newline == False, always add a newline at the start/end even if
+#   there was none in the beginning.
+#
 # This should not be done for inline tags. It assumes:
 # - We don't need to recurse into child tags (because we already handled those).
 # - Our contents could be only whitespace/<br>. In that case we still won't
 #   remove the empty tags; they might still mean something (because of being
 #   a non-inline tag, possibly having an 'id' or whatever else).
-def stripnoninlinewhitespace(tag):
+def stripnoninlinewhitespace(tag, including_newline = None):
   # We really should not have empty contents by now, but still:
   r = tag.contents
   if len(r):
@@ -483,10 +497,11 @@ def stripnoninlinewhitespace(tag):
     # Now strip (more) spaces from the end of the last NavigableString(s), but
     # no (more) <br>. (If the tag is now totally empty, don't readd newline.)
     if len(r):
-      striptrailingwhitespace(r[-1], readd_newline)
+
+      striptrailingwhitespace(r[-1], False if including_newline == None and readd_newline else including_newline)
       # Also strip from the start.
       if len(r):
-        stripleadingwhitespace(r[0])
+        stripleadingwhitespace(r[0], including_newline)
 
 # Move leading/trailing whitespace out of tag; optionally remove empty tag.
 #
@@ -1466,7 +1481,7 @@ for tagname in inline_tags + ['p', 'h2', 'h3', 'h4', 'li', 'blockquote']:
 # ugly. We just do the rest too because why not.)
 for tagname in ['p', 'h2', 'h3', 'h4', 'li', 'blockquote', 'div']:
   for t in soup.findAll(tagname):
-    stripnoninlinewhitespace(t)
+    stripnoninlinewhitespace(t, True if tagname == 'li' else None)
 stripnoninlinewhitespace(soup.body)
 
 # In the same vein, remove unnecessary whitespace just before and after <br>s.
