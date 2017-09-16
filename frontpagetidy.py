@@ -1326,29 +1326,25 @@ for table in soup.findAll('table'):
   # Looped through all rows; we know if this table contains only bullet points.
   if all_bullets:
     # Insert ul just before the table.
-    e = Tag(soup, 'ul')
+    ul = Tag(soup, 'ul')
     # Content inside a 'td' is left aligned by default; accommodate for that.
-    e['style'] = 'text-align: left'
-    l = getindexinparent(table)
-    table.parent.insert(l, e)
-    # insert li's and move all the contents from the second td's into there
+    ul['style'] = 'text-align: left'
+    i = getindexinparent(table)
+    table.parent.insert(i, ul)
+    # Pad the inside of the ul (at start and end) with \n.
+    e = NavigableString('\n')
+    ul.insert(0, e)
+    # Insert li's and move all the contents from the second td's into there.
+    # Other code will take care of straightening out e.g. spacing.
     # (Is it always legal to just 'dump everything' inside a li? Let's hope so.)
-    i = 0
+    i = 1
     for tr in r_tr:
-      ee = Tag(soup,'li')
-      e.insert(i, ee)
+      e = Tag(soup,'li')
+      ul.insert(i, e)
       r_td = tr.findAll('td', recursive=False)
-      r2 = getcontents(r_td[1], 'nonwhitespace_string')
-      r2 = getcontents(r_td[1], 'tags')
-      # If there's exactly one paragraph inside the 'td', insert only its
-      # contents (and disregard whitespace). Otherwise insert everything.
-      if len(r1) == 0 and len(r2) == 1 and gettagname(r2[0]) == 'p':
-        movecontentsinside(r2[0], ee)
-      else:
-        # any other case: just insert all contents of the 'td'
-        movecontentsinside(r_td[1], ee)
-      ee = NavigableString('\n')
-      e.insert(i + 1, ee)
+      movecontentsinside(r_td[1], e)
+      e = NavigableString('\n')
+      ul.insert(i + 1, e)
       i = i + 2
     table.extract()
 
