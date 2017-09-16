@@ -1428,8 +1428,8 @@ for tagname in inline_tags:
 #   the single tag wrapped in another element (like e.g. blockquote, li). (Or
 #   wrapping a single other element, but that probably won't happen.) We must
 #   leave it at the end though, because we want other tags to be removed in
-#   favor of <p>. Also we want to remove spacing in paragraphs before dong this.
-for tagname in ['font', 'div', 'span', 'a']:
+#   favor of <p>.
+for tagname in ['font', 'div', 'span', 'a', 'p']:
   for t in soup.findAll(tagname):
     mangletag(t)
 
@@ -1452,7 +1452,7 @@ for tagname in ['p', 'h2', 'h3', 'h4']:
 # tags with two newlines in the middle of the title so we explicitly want to do
 # those.) We won't recurse into child tags; we don't dare to assume that no tags
 # will have problems with whitespace removal - e.g. <pre>.)
-for tagname in inline_tags + ['p', 'h2', 'h3', 'h4', 'li']:
+for tagname in inline_tags + ['p', 'h2', 'h3', 'h4', 'li', 'blockquote']:
   for t in soup.findAll(tagname):
     r = t.contents
     i = 0
@@ -1468,7 +1468,7 @@ for tagname in inline_tags + ['p', 'h2', 'h3', 'h4', 'li']:
 # This does not make a difference for rendering; it just makes for neater HTML.
 # (We've often seen useless &nbsp;s at the end of lines (li/p) which are just
 # ugly. We just do the rest too because why not.)
-for tagname in ['p', 'h2', 'h3', 'h4', 'li', 'div']:
+for tagname in ['p', 'h2', 'h3', 'h4', 'li', 'blockquote', 'div']:
   for t in soup.findAll(tagname):
     stripnoninlinewhitespace(t)
 stripnoninlinewhitespace(soup.body)
@@ -1557,11 +1557,6 @@ if c_remove_empty_paragraphs_under_blocks:
         e2 = e2.nextSibling
       if gettagname(e2) == 'p' and len(e2.contents) == 0:
         e2.extract()
-
-# As said above: now that we're done removing spacing, remove <p>s which are
-# wrapped in (or wrapping?) a single non-inline tag.
-for t in soup.findAll('p'):
-  mangletag(t)
 
 
 #####
