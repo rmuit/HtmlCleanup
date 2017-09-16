@@ -1559,7 +1559,9 @@ for br in soup.findAll('br'):
             if lf != None:
               lf.extract()
 
-# Remove empty paragraphs after 'block elements'.
+# If there's one empty paragraph after 'block elements', remove it.
+# (We assume that such whitespacea should be implemented in a unified way using
+# CSS in the target, not using HTML.)
 if c_remove_empty_paragraphs_under_blocks:
   for tagname in ['table', 'ul']:
     for t in soup.findAll(tagname):
@@ -1695,6 +1697,21 @@ while v:
       v = 0 # other nonempty paragraph while v==1
   else:
     v = 0 # other tag/NavigableString
+
+
+# Remove empty paragraphs at the end of the document. (Same reason.)
+last_tag = soup.body.contents[-1]
+if last_tag.__class__.__name__ == 'NavigableString' and str(last_tag) == '\n':
+  last_tag = last_tag.previousSibling
+while gettagname(last_tag) == 'div':
+  last_tag = last_tag.contents[-1]
+  if last_tag.__class__.__name__ == 'NavigableString' and str(last_tag) == '\n':
+    last_tag = last_tag.previousSibling
+# paragraphs have no whitespace in them anymore, if they are empty.
+while gettagname(last_tag) == 'p' and len(last_tag.contents) == 0:
+  t = last_tag.previousSibling
+  last_tag.extract()
+  last_tag = t
 
 # BeautifulSoup (at least 3.x tested so far) outputs <br />, which is kind-of
 # illegal and certainly unnecessary as HTML.
