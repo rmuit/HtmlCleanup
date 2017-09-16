@@ -137,7 +137,7 @@ c_dedupe_nbsp = True
 # - the full text representation of a tag.
 # Should not be used on things we know are NavigableStrings, because useless,
 # therefore introducing ambiguity in the code.
-rxglobal_spacehmtl_only = re.compile('^(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
+rxglobal_spacehtml_only = re.compile('^(?:\s|\&nbsp\;|\<br ?\/?\>)+$')
 #
 # Regexes usable on NavigableStrings.
 # We want to use thse for replacement (specifically by ''). Space excluding
@@ -175,22 +175,22 @@ rxglobal_multinbspace_not_at_start = re.compile('(\S)(?<!\&nbsp\;)((?:\s|(?<!\;)
 ###
 
 # Return the index of an element inside parent contents.
-def getindexinparent(slf):
+def getindexinparent(element):
   # (Maybe there is a better way than this; I used to have this in a patched
   # version of the BeautifulSoup.py library 3.1.0.1 itself, before I started
   # working with the non-buggy v3.0.8.1. So I just took the function out
   # and didn't look further.)
   index = 0
-  while index < len(slf.parent.contents):
-    if slf.parent.contents[index] is slf:
+  while index < len(element.parent.contents):
+    if element.parent.contents[index] is element:
       return index
     index = index + 1
   # If this happens, something is really wrong with the data structure:
-  return None
+  exit('Internal fatal error: Could not find element back inside its own parent!?:' + str(element))
 
 # Return the tag name of an element (or '' if this is not a tag).
 #
-# I was surprised I can't find a function like this in BS...
+# I was surprised I can't find a function like this in BeautifulSoup...
 def gettagname(element):
   if element.__class__.__name__ != 'Tag':
     return ''
@@ -248,7 +248,7 @@ def saferegexsearch(element, rx):
   # (If it isn't a bug in BeautifulSoup 3.1; probably not.)
   s = element.__repr__()
   if s.find('\\u') != -1 or s.find('\\x') != -1:
-    return False
+    return None
   return rx.search(str(element))
 
 # Get filtered contents of a tag.
@@ -512,7 +512,7 @@ def movewhitespacetoparent(tag, remove_if_empty = True, inline_tagnames = []):
 
   # Move all-whitespace contents (including <br>) to before. This could change
   # r, so loop.
-  while saferegexsearch(r[0], rxglobal_spacehmtl_only):
+  while saferegexsearch(r[0], rxglobal_spacehtml_only):
     # Find destination tag, and possibly destination string, to move our
     # whitespace to.
     t = tag
@@ -568,7 +568,7 @@ def movewhitespacetoparent(tag, remove_if_empty = True, inline_tagnames = []):
 
   # Move all-whitespace contents (including <br>) to after. This could change
   # r, so loop. Because of above, we know r will never become empty here.
-  while saferegexsearch(r[-1], rxglobal_spacehmtl_only):
+  while saferegexsearch(r[-1], rxglobal_spacehtml_only):
     # Find destination tag, and possibly destination string, to move our
     # whitespace to.
     t = tag
@@ -925,8 +925,10 @@ def mangleattributes(tag):
 # if this is possible or the tag has no attributes, remove the tag. This can
 # also change/delete attributes.
 #
-# This can be used to remove 'purely inline' (non-'position') tags. There is
-# special handling for:
+# This can be used to remove inline tags which have no semantic meaning. (So
+# e.g. not <p> because that's not inline and changes positioning; not <em>
+# because that has semantic meaning and changes how its contents are printed.
+# But span and 'non-link anchors'.) There is special handling for:
 # - <font> which we always want to remove: if we cannot move all its attributes
 #   somewhere else then we replace it by a <span>.
 # - <a> which only hold a name; we replace it by an id in another tag if that
@@ -993,8 +995,8 @@ def mangletag(tag):
       # We cannot merge this tag into another one, but we'll also change
       # attributes here if necessary.
       mangleattributes(tag)
-      # If the tagname itself has no implicit meaning, remove it. (The <div>
-      # is disputable; it's not 100% sure that removing an empty one will not
+      # If the tag itself has no implicit meaning, remove it. (The <div> is
+      # disputable; it's not 100% sure that removing an empty one will not
       # influence positioning/grouping. But we assume for MS Frontpage pages
       # they are superfluous. See also: comments at caller.)
       if len(tag.attrs) == 0 and tagname in ['span', 'div']:
@@ -1240,7 +1242,7 @@ for t in soup.findAll('i'):
   movecontentsinside(t, e)
   t.extract()
 
-# Remove strange MSFT 'o:p' tags.
+# Remove strange MSFP 'o:p' tags.
 #
 # We have no idea what they are useful for; they're sometimes inserted in random
 # places in the middle of a sentence inside a span, don't always have end tags.
@@ -1254,68 +1256,81 @@ for t in soup.findAll('o:p'):
 
 ## Soup part 2: work on large block elements in document structure.
 
-# Delete tables with one TR having one TD - these are useless
-# (take their contents out of the tables)
-r = soup.findAll('table')
-for t in r:
-  r_tr = t.findAll('tr', recursive=False)
-  if len(r_tr) == 0:
-    t.extract()
-  elif len(r_tr) == 1:
-    r_td = r_tr[0].findAll('td',recursive=False)
-    if len(r_td) == 0:
-      t.extract()
-    elif len(r_td) == 1:
-      #movecontentsbefore(r_td[0], t)
-      # content inside a 'td' is left aligned by default, so we
-      # need to accomodate for that.
-      e = Tag(soup, 'div')
-      e['style'] = 'text-align: left'
-      t.parent.insert(getindexinparent(t), e)
-      movecontentsinside(r_td[0], e)
-      t.extract()
+# Delete tables with one TR having one TD; these are useless.
+#
+# (Take their contents out of the tables.)
+# Note that we assume <table> tags only contain <
+for table in soup.findAll('table'):
+  r1 = getcontents(table, 'nonwhitespace_string')
+  r2 = getcontents(table, 'tags')
+  if len(r1) + len(r2) == 0:
+    table.extract()
+  else:
+    r_tr = table.findAll('tr', recursive=False)
+    if len(r_tr) == 1:
+
+      r1 = getcontents(r_tr[0], 'nonwhitespace_string')
+      r2 = getcontents(r_tr[0], 'tags')
+      if len(r1) + len(r2) == 0:
+        table.extract()
+      else:
+        r_td = r_tr[0].findAll('td', recursive=False)
+        if len(r_td) == 0:
+          table.extract()
+        elif len(r_td) == 1:
+
+          # Content inside a 'td' is left aligned by default; accomodate for
+          # that. (checkalign() can delete it later if needed.)
+          e = Tag(soup, 'div')
+          e['style'] = 'text-align: left'
+          table.parent.insert(getindexinparent(table), e)
+          movecontentsinside(r_td[0], e)
+          table.extract()
 
 # Our HTML uses tables as a way to make bullet points:
 # one table with each row having 2 fields, the first of which only
 # contains a 'bullet point image'.
 # Replace those tables by <ul><li> structures.
 rxb = re.compile(c_img_bullet_re)
-r = soup.findAll('table')
-for t in r:
-  r_tr = t.findAll('tr', recursive=False)
+for table in soup.findAll('table'):
+  r1 = getcontents(table, 'nonwhitespace_string')
+  r2 = getcontents(table, 'tags')
+  r_tr = table.findAll('tr', recursive=False)
+  if len(r1) + len(r2) != len(r_tr):
+    exit('Parse error: table contains other direct tags than tr.')
+
   all_bullets = 1
   for tr in r_tr:
+    # 'Break' (skip further processing) if any row does not have all bullets.
     if all_bullets:
       all_bullets = 0
+
+      r1 = getcontents(tr, 'nonwhitespace_string')
+      r2 = getcontents(tr, 'tags')
       r_td = tr.findAll('td', recursive=False)
+      if len(r1) + len(r2) != len(r_td):
+        exit('Parse error: tr contains other direct tags than td.')
+
       if len(r_td) == 2:
-        # Inspect the first 'td':
-        # needs to contain only one 'img' tag.
-        # (I don't know how to determine the tag of an element, so do duplicate findAll())
-        #r_cont = r_td[0].findAll()
-        #if len(r_cont) == 1 and len(r_td[0].findAll('img')) == 1:
-        r_cont = filter(lambda x: x != '\n', r_td[0].contents)
-        if len(r_cont) == 1:
-          s = r_cont[0].__repr__()
-          if s[0:5] == '<img ' and s[-2:] == '/>':
-            # When is this a bullet point? Look at 'src' tag. That'll do.
-            # Is a relative path, so it's OK to look only at the end (which is
-            # encoded in the regexp).
-            s = r_cont[0]['src']
-            if rxb.search(s):
-              all_bullets = 1
-  # After looping through everything, we know if this table contains 'only bullet points'
+        # The first 'td' must contain a sigle 'img' tag.
+        r1 = getcontents(r_td[0], 'nonwhitespace_string')
+        r2 = getcontents(r_td[0], 'tags')
+        if len(r1) == 0 and len(r2) == 1 and gettagname(r2[0]) == 'img':
+          # When is this a bullet point? Look at 'src' tag. That'll do.
+          # Is a relative path, so it's OK to look only at the end (which is
+          # encoded in the regexp).
+          s = r2[0]['src']
+          if rxb.search(s):
+            all_bullets = 1
+
+  # Looped through all rows; we know if this table contains only bullet points.
   if all_bullets:
-    # insert ul just before the table
-    # (If some of the siblings are NavigableStrings, not inside an element...
-    # this actually misplaces stuff and the ul may be inserted _before_ a string
-    # when it should be inserted after. I don't know a solution for this atm.)
+    # Insert ul just before the table.
     e = Tag(soup, 'ul')
-    # Again: content inside a 'td' is left aligned by default, so we
-    # need to accomodate for that.
+    # Content inside a 'td' is left aligned by default; accommodate for that.
     e['style'] = 'text-align: left'
-    l = getindexinparent(t)
-    t.parent.insert(l, e)
+    l = getindexinparent(table)
+    table.parent.insert(l, e)
     # insert li's and move all the contents from the second td's into there
     # (Is it always legal to just 'dump everything' inside a li? Let's hope so.)
     i = 0
@@ -1323,28 +1338,19 @@ for t in r:
       ee = Tag(soup,'li')
       e.insert(i, ee)
       r_td = tr.findAll('td', recursive=False)
-      #r_cont = r_td[1].findAll()
-      # In the preceding code we used findAll() because we assumed that there
-      # are no loose NavigableStrings in between tr's or td's.
-      # However with the contents of the second td, we can't take that chance.
-      r_cont = filter(lambda x: x != '\n', r_td[1].contents)
-      if len(r_cont) == 1:
-        s = r_cont[0].__repr__()
-        # Remark: yes, we should allow for other whitespace (e.g. newline) behind the p...
-        # But not right now. We're only doing this nasty frontpage html and it'll do.
-        if (s[0:3] == '<p ' or s[0:3] == '<p>') and s[-4:] == '</p>':
-          # inside the 'td' there's exactly one paragraph.
-          # insert the contents of the paragraph, instead of the paragraph itself.
-          movecontentsinside(r_cont[0], ee)
-        else:
-          # any other case: just insert all contents of the 'td'
-          movecontentsinside(r_td[1], ee)
+      r2 = getcontents(r_td[1], 'nonwhitespace_string')
+      r2 = getcontents(r_td[1], 'tags')
+      # If there's exactly one paragraph inside the 'td', insert only its
+      # contents (and disregard whitespace). Otherwise insert everything.
+      if len(r1) == 0 and len(r2) == 1 and gettagname(r2[0]) == 'p':
+        movecontentsinside(r2[0], ee)
       else:
+        # any other case: just insert all contents of the 'td'
         movecontentsinside(r_td[1], ee)
       ee = NavigableString('\n')
       e.insert(i + 1, ee)
       i = i + 2
-    t.extract()
+    table.extract()
 
 
 # Delete/change superfluous alignment attributes (and <center> tags sometimes)
@@ -1363,7 +1369,7 @@ for t in r:
   if r1:
     r2 = t.findAll(recursive=False)
     if len(r1) == len(r2) and len(getcontents(t, 'nonwhitespace_string')) == 0:
-      # all tags are 'strong' and all navigablestrings are whitespace.
+      # All tags are 'strong' and all navigablestrings are whitespace.
       # Delete the 'strong' (can be a chain of multiple, in extreme weird cases)
       for e in r1:
         movecontentsbefore(e, e)
@@ -1384,7 +1390,7 @@ for t in r:
     # whitespace, there is still no difference in taking it away.
 #    ok = 1
 #    for ee in e.parent.contents:
-#      if ee != e and not(saferegexsearch(ee, rxglobal_spacehmtl_only)):
+#      if ee != e and not(saferegexsearch(ee, rxglobal_spacehtml_only)):
 #        ok = 0
 #        break
 #    if ok:
@@ -1408,10 +1414,12 @@ for tagname in inline_tags:
   for t in soup.findAll(tagname):
     movewhitespacetoparent(t, tagname != 'a', inline_tags)
 
-# Check if we can get rid of some 'inline' (not 'positioning') tags if we move
-# their attributes to a child/parent; also normalize their attributes. <font>
-# must come first; it has special handling so it's always removed (and replaced
-# by <span> if necessary). We're not sure of what definition we adhere to yet:
+# Check if we can get rid of some inline tags if we move their attributes to a
+# child/parent; also normalize their attributes.
+#
+# <font> must come first; it has special handling so it's always removed (and
+# replaced by <span> if necessary). We're not sure of what definition we adhere
+# to yet:
 # - <div> is not an inline element but we assume we can remove it for MS
 #   Frontpage pages without trouble. (If this turns out not to be the case, we
 #   might need to change checkalign() because that may leave empty <div>s
@@ -1424,6 +1432,7 @@ for tagname in inline_tags:
 for tagname in ['font', 'div', 'span', 'a']:
   for t in soup.findAll(tagname):
     mangletag(t)
+
 # Normalize other tags' attributes if necessary.
 #
 # (h2 / h4 tags with cleanable attributes found in one website. Adding h3.)
@@ -1544,13 +1553,13 @@ if c_remove_empty_paragraphs_under_blocks:
   for tagname in ['table', 'ul']:
     for t in soup.findAll(tagname):
       e2 = t.nextSibling
-      while str(e2) == '\n':
+      while saferegexsearch(e2, rxglobal_nbspace_only):
         e2 = e2.nextSibling
       if gettagname(e2) == 'p' and len(e2.contents) == 0:
         e2.extract()
 
 # As said above: now that we're done removing spacing, remove <p>s which are
-# wrapped insidee (or wrapping?) a single non-positioning tag.
+# wrapped in (or wrapping?) a single non-inline tag.
 for t in soup.findAll('p'):
   mangletag(t)
 
@@ -1597,7 +1606,7 @@ rx_titleimg = re.compile('^\<img .*src=\"_derived\/[^\>]+\/\>$')
 r = soup.body.contents
 if str(r[0]) == '\n':
   # We want the first newline to remain there, so the body tag will be on a line
-  # by itself.
+  # by itself. (We can assume newlines because we've stripped spaces.)
   i = 1
 else:
   i = 0
@@ -1608,7 +1617,7 @@ while v >= 0:
   # whitespace' (newlines) that is unnecessary now.
   # Removing 'HTML whitespace' (like breaks/nbsp) has its effect on the actual
   # page; delete it anyway. I think we want to unify 'space at the start'.
-  if saferegexsearch(r[i], rxglobal_spacehmtl_only):
+  if saferegexsearch(r[i], rxglobal_spacehtml_only):
     r[i].extract()
     # r is now changed; loop (instead of increasing i).
   elif saferegexsearch(r[i], rx_p_start):
@@ -1651,7 +1660,7 @@ else:
 
 v = 3
 while v:
-  if saferegexsearch(r[i], rxglobal_spacehmtl_only):
+  if saferegexsearch(r[i], rxglobal_spacehtml_only):
     r[i].extract()
     # r is now changed; loop (instead of decreasing i).
   elif saferegexsearch(r[i], rx_p_start):
